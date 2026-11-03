@@ -38,7 +38,9 @@ required-features = ["cli"]
 [features]
 default = ["desktop", "device-audio"]
 cli = ["dep:clap", "dep:env_logger"]
-desktop = ["cli", "dep:bytemuck", "dep:pollster", "dep:softbuffer", "dep:wgpu", "dep:winit"]
+desktop = ["cli", "gpu", "dep:softbuffer", "dep:winit"]
+# The wgpu scene renderer without a window system: hosts hand it a surface.
+gpu = ["dep:bytemuck", "dep:pollster", "dep:wgpu"]
 device-audio = ["kira/cpal"]
 # Platform shells pull PCM from Kira through the C ABI instead of using CPAL.
 host-audio = []

@@ -1,11 +1,20 @@
+// Without `desktop` only the wgpu backend and the scene helpers are built
+// (mobile hosts that bring their own surface); the window renderer and the
+// software compositor that feeds a winit window are desktop-only.
+#![cfg_attr(not(feature = "desktop"), allow(dead_code, unused_imports))]
+
 use std::collections::HashMap;
 use std::io::Write;
+#[cfg(feature = "desktop")]
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(feature = "desktop")]
 use winit::dpi::PhysicalSize;
+#[cfg(feature = "desktop")]
 use winit::event_loop::OwnedDisplayHandle;
+#[cfg(feature = "desktop")]
 use winit::window::Window;
 
 use crate::scene::{
@@ -14,10 +23,10 @@ use crate::scene::{
 };
 
 mod shader;
-mod wgpu_backend;
+pub mod wgpu_backend;
 
 pub use shader::{shader_source, ShaderProgram};
-use wgpu_backend::WgpuBackend;
+pub use wgpu_backend::WgpuBackend;
 
 #[derive(Clone, Copy, Debug)]
 pub struct RendererConfig {
@@ -48,6 +57,7 @@ pub enum RenderOutcome {
     Reconfigured,
 }
 
+#[cfg(feature = "desktop")]
 pub struct Renderer {
     window: Arc<Window>,
     backend: Backend,
@@ -58,16 +68,19 @@ pub struct Renderer {
     frame_dump_written: bool,
 }
 
+#[cfg(feature = "desktop")]
 enum Backend {
     Software(SoftwareBackend),
     Wgpu(WgpuBackend),
 }
 
+#[cfg(feature = "desktop")]
 struct SoftwareBackend {
     surface: softbuffer::Surface<Arc<Window>, Arc<Window>>,
     scene_textures: HashMap<SceneTextureId, CachedTexture>,
 }
 
+#[cfg(feature = "desktop")]
 impl Renderer {
     pub async fn new(
         window: Arc<Window>,
@@ -223,6 +236,7 @@ impl Renderer {
     }
 }
 
+#[cfg(feature = "desktop")]
 impl SoftwareBackend {
     fn upload_scene_textures(&mut self, scene: &FrameScene) {
         self.scene_textures.retain(|texture_id, _| {
@@ -699,14 +713,17 @@ fn pack_rgb(r: u8, g: u8, b: u8) -> u32 {
     (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
 }
 
+#[cfg(feature = "desktop")]
 fn nonzero_size(size: PhysicalSize<u32>) -> PhysicalSize<u32> {
     PhysicalSize::new(size.width.max(1), size.height.max(1))
 }
 
+#[cfg(feature = "desktop")]
 fn nonzero(value: u32) -> NonZeroU32 {
     NonZeroU32::new(value.max(1)).expect("value was clamped to non-zero")
 }
 
+#[cfg(feature = "desktop")]
 fn softbuffer_error(err: softbuffer::SoftBufferError) -> anyhow::Error {
     anyhow::anyhow!("{err:?}")
 }
@@ -796,7 +813,7 @@ mod tests {
             generation: 1,
             width: 2,
             height: 1,
-            pixels: Arc::from([255, 0, 0, 255, 0, 0, 255, 255]),
+            pixels: Arc::new(vec![255, 0, 0, 255, 0, 0, 255, 255]),
         };
         let mut smooth = [0; 4];
         draw_textured_rect(&mut smooth, 4, 1, &texture, [2.0, 1.0], &test_sprite(true));
@@ -823,7 +840,7 @@ mod tests {
             generation: 1,
             width: 2,
             height: 1,
-            pixels: Arc::from([255, 0, 0, 255, 0, 0, 255, 0]),
+            pixels: Arc::new(vec![255, 0, 0, 255, 0, 0, 255, 0]),
         };
         let middle = sample_bilinear(&texture, 0.5, 0.0, [0, 0, 1, 0]);
         assert_eq!(&middle[..3], &[255, 0, 0]);

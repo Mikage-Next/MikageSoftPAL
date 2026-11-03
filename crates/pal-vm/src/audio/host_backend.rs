@@ -27,6 +27,22 @@ impl AudioSink {
     }
 }
 
+impl AudioSink {
+    /// Interleaved stereo float samples at 48 kHz (`output.len()` even).
+    pub fn render_f32(&self, output: &mut [f32]) {
+        output.fill(0.0);
+        let Ok(mut slot) = self.0.lock() else {
+            return;
+        };
+        let Some(renderer) = slot.as_mut() else {
+            return;
+        };
+        renderer.on_start_processing();
+        let len = output.len() & !1;
+        renderer.process(&mut output[..len], 2);
+    }
+}
+
 pub struct HostBackend(AudioSink);
 
 impl Backend for HostBackend {

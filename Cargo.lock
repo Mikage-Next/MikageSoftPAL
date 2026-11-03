@@ -2776,9 +2776,9 @@ dependencies = [
 
 [[package]]
 name = "rtrb"
-version = "0.3.4"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ade083ccbb4bf536df69d1f6432cc23deb7acccff86b183f3923a6fd56a1153"
+checksum = "ad8388ea1a9e0ea807e442e8263a699e7edcb320ecbcd21b4fa8ff859acce3ba"
 
 [[package]]
 name = "rustc-hash"
@@ -2885,6 +2885,22 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+
+[[package]]
+name = "sena-mobile"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "encoding_rs",
+ "log",
+ "pal-asset",
+ "pal-vm",
+ "png",
+ "pollster 0.4.0",
+ "raw-window-handle 0.6.2",
+ "rtrb",
+ "wgpu 29.0.3",
+]
 
 [[package]]
 name = "send_wrapper"

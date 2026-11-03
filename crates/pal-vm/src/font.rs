@@ -7,7 +7,23 @@ mod raster;
 use bitmap::PalBitmapFont;
 pub use native::PalDrawTextRect32;
 
-static DEFAULT_TTF_BYTES: &[u8] = include_bytes!("default.ttf");
+/// TrueType face registered by an embedding host (the iOS app passes its
+/// system font), tried before the desktop system font paths. No face is
+/// bundled with the engine.
+static HOST_FALLBACK_TTF: std::sync::Mutex<Option<(&'static [u8], u32)>> =
+    std::sync::Mutex::new(None);
+
+/// Registers the host's text face, used by every engine created afterwards.
+/// Returns false, and keeps the previous face, when `bytes` is not a font.
+/// `index` picks the face of a collection (TTC), 0 for a single font.
+pub fn set_host_fallback_font(bytes: Vec<u8>, index: u32) -> bool {
+    if FontRef::try_from_slice_and_index(&bytes, index).is_err() {
+        return false;
+    }
+    let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+    *HOST_FALLBACK_TTF.lock().unwrap_or_else(|p| p.into_inner()) = Some((leaked, index));
+    true
+}
 
 /// Release-specific native font semantics. Selection by script metadata is an
 /// audited-release heuristic, not a universal PAL version detector.
@@ -280,7 +296,7 @@ impl PalFontSystem {
     ///
     /// Releases that deliver their CJK faces as loose files (`fonts/*.ttf`)
     /// instead of extending `DEFAULT_FONT.DAT` need a host-provided face for
-    /// the glyphs the PAL bitmap font and the embedded `default.ttf` do not
+    /// the glyphs the PAL bitmap font and the fallback face (the host's or a system one) do not
     /// cover. Returns whether the bytes parsed; on failure the previous
     /// fallback is kept.
     pub fn load_external_font(&mut self, bytes: Vec<u8>) -> bool {
@@ -478,25 +494,31 @@ impl PalFontSystem {
 
 #[derive(Clone, Debug)]
 pub struct PalFontFallback {
-    font: FontRef<'static>,
+    /// `None` when neither the host nor the system has a usable face: text
+    /// then measures empty instead of stopping the engine.
+    font: Option<FontRef<'static>>,
 }
 
 impl PalFontFallback {
-    /// Construct using the embedded default.ttf.  Panics only if the embedded file
-    /// is corrupt (which would be a build-time error, not a runtime condition).
+    /// The host's registered face, else the first system CJK face found.
     pub fn default_ttf() -> Self {
+        let host = *HOST_FALLBACK_TTF.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(font) =
+            host.and_then(|(bytes, index)| FontRef::try_from_slice_and_index(bytes, index).ok())
+        {
+            return Self { font: Some(font) };
+        }
         for path in SYSTEM_CJK_FONT_CANDIDATES {
             let Ok(bytes) = std::fs::read(path) else {
                 continue;
             };
             let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
             if let Ok(font) = FontRef::try_from_slice(leaked) {
-                return Self { font };
+                return Self { font: Some(font) };
             }
         }
-        let font = FontRef::try_from_slice(DEFAULT_TTF_BYTES)
-            .expect("default.ttf embedded in pal-vm is not a valid TrueType font");
-        Self { font }
+        log::error!("no text face: register one with the host or pass --font-file");
+        Self { font: None }
     }
 
     /// Build a fallback from caller-supplied TrueType bytes.
@@ -507,17 +529,20 @@ impl PalFontFallback {
         let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         FontRef::try_from_slice(leaked)
             .ok()
-            .map(|font| Self { font })
+            .map(|font| Self { font: Some(font) })
     }
 
     /// Measure the pixel width of a single text line at the given pixel height.
     /// Returns `(width_px, height_px)`.
     pub fn measure_line(&self, text: &str, px_height: f32) -> (u32, u32) {
+        let Some(font) = self.font.as_ref() else {
+            return (0, px_height.ceil() as u32);
+        };
         let scale = PxScale::from(px_height);
-        let scaled = self.font.as_scaled(scale);
+        let scaled = font.as_scaled(scale);
         let width: f32 = text
             .chars()
-            .map(|c| scaled.h_advance(self.font.glyph_id(c)))
+            .map(|c| scaled.h_advance(font.glyph_id(c)))
             .sum();
         (width.ceil() as u32, px_height.ceil() as u32)
     }
@@ -534,10 +559,13 @@ impl PalFontFallback {
         px_height: f32,
         color_bgra: [u8; 4],
     ) -> (u32, u32, Vec<u8>) {
-        let scale = PxScale::from(px_height);
-        let scaled = self.font.as_scaled(scale);
-
         let (width, height) = self.measure_line(text, px_height);
+        let Some(font) = self.font.as_ref() else {
+            let h = height.max(1);
+            return (1, h, vec![0; h as usize * 4]);
+        };
+        let scale = PxScale::from(px_height);
+        let scaled = font.as_scaled(scale);
         let w = width.max(1) as usize;
         let h = height.max(1) as usize;
         let mut pixels = vec![0u8; w * h * 4];
@@ -546,12 +574,12 @@ impl PalFontFallback {
         let baseline_y = scaled.ascent();
 
         for ch in text.chars() {
-            let glyph_id = self.font.glyph_id(ch);
+            let glyph_id = font.glyph_id(ch);
             let glyph =
                 glyph_id.with_scale_and_position(scale, ab_glyph::point(cursor_x, baseline_y));
             cursor_x += scaled.h_advance(glyph_id);
 
-            if let Some(outlined) = self.font.outline_glyph(glyph) {
+            if let Some(outlined) = font.outline_glyph(glyph) {
                 let bounds = outlined.px_bounds();
                 // Some fallback fonts place shorter glyphs a pixel or two
                 // above the bottom of the ideographic cell. PAL text uses a
@@ -610,6 +638,16 @@ fn argb_to_rgba(color: u32) -> [u8; 4] {
         (color & 0xFF) as u8,
         ((color >> 24) & 0xFF) as u8,
     ]
+}
+
+/// A system CJK face for tests, which no longer have a bundled one
+/// (Linux: apt install fonts-noto-cjk).
+#[cfg(test)]
+pub(crate) fn test_face_bytes() -> Vec<u8> {
+    SYSTEM_CJK_FONT_CANDIDATES
+        .iter()
+        .find_map(|path| std::fs::read(path).ok())
+        .expect("tests need a system CJK font such as fonts-noto-cjk")
 }
 
 #[cfg(test)]

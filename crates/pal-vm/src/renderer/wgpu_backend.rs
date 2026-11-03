@@ -6,10 +6,12 @@
 //! sprite, mirroring the software compositor's source-over blending.
 
 use std::collections::HashMap;
-use std::sync::Arc;
-
 use wgpu::util::DeviceExt;
+#[cfg(feature = "desktop")]
+use std::sync::Arc;
+#[cfg(feature = "desktop")]
 use winit::dpi::PhysicalSize;
+#[cfg(feature = "desktop")]
 use winit::window::Window;
 
 use crate::scene::{DrawCommand, FrameScene, SceneTexture, SceneTextureId, SpriteDraw};
@@ -248,13 +250,29 @@ pub struct WgpuBackend {
     textures: HashMap<SceneTextureId, GpuTexture>,
     vertex_buffer: wgpu::Buffer,
     vertex_capacity: u64,
+    /// Letterbox rectangle (x, y, width, height in surface pixels) the scene
+    /// is fitted into; the rest of the surface is cleared black. `None` fills
+    /// the whole surface, as the desktop window does.
+    viewport: Option<[u32; 4]>,
 }
 
 impl WgpuBackend {
+    #[cfg(feature = "desktop")]
     pub async fn new(window: Arc<Window>, size: PhysicalSize<u32>) -> anyhow::Result<Self> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let surface = instance.create_surface(window)?;
+        Self::with_surface(&instance, surface, size.width, size.height).await
+    }
+
+    /// Builds the backend on a surface the host created from `instance`
+    /// (mobile hosts make one from their own view).
+    pub async fn with_surface(
+        instance: &wgpu::Instance,
+        surface: wgpu::Surface<'static>,
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<Self> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -291,8 +309,8 @@ impl WgpuBackend {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            width: size.width.max(1),
-            height: size.height.max(1),
+            width: width.max(1),
+            height: height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: 2,
             alpha_mode: capabilities.alpha_modes[0],
@@ -459,6 +477,7 @@ impl WgpuBackend {
             textures: HashMap::new(),
             vertex_buffer,
             vertex_capacity,
+            viewport: None,
         })
     }
 
@@ -484,15 +503,26 @@ impl WgpuBackend {
         })
     }
 
+    #[cfg(feature = "desktop")]
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
-        let width = size.width.max(1);
-        let height = size.height.max(1);
+        self.resize_to(size.width, size.height);
+    }
+
+    pub fn resize_to(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
         if width == self.config.width && height == self.config.height {
             return;
         }
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
+    }
+
+    /// Fits the scene into `rect` (surface pixels) and clears the rest black.
+    /// `None` draws over the whole surface again.
+    pub fn set_viewport(&mut self, rect: Option<[u32; 4]>) {
+        self.viewport = rect.filter(|r| r[2] > 0 && r[3] > 0);
     }
 
     fn reconfigure(&mut self) {
@@ -597,13 +627,31 @@ impl WgpuBackend {
         let resolved = crate::scene::resolve_raster_stage(scene);
         let scene = resolved.as_ref();
         self.sync_textures(scene);
+        // With a letterbox the scene is laid out in the viewport's pixels and
+        // the viewport transform places it; clip space is the viewport.
+        let target = self
+            .viewport
+            .map_or([self.config.width, self.config.height], |r| [r[2], r[3]]);
         let scale = [
-            self.config.width as f32 / scene.logical_width.max(1) as f32,
-            self.config.height as f32 / scene.logical_height.max(1) as f32,
+            target[0] as f32 / scene.logical_width.max(1) as f32,
+            target[1] as f32 / scene.logical_height.max(1) as f32,
         ];
-        let surface_size = [self.config.width, self.config.height];
-        let mut vertices: Vec<SpriteVertex> = Vec::with_capacity(scene.commands.len() * 6);
-        let mut spans: Vec<DrawSpan> = Vec::with_capacity(scene.commands.len());
+        let surface_size = target;
+        let mut vertices: Vec<SpriteVertex> = Vec::with_capacity(scene.commands.len() * 6 + 6);
+        let mut spans: Vec<DrawSpan> = Vec::with_capacity(scene.commands.len() + 1);
+        let letterbox_clear = self.viewport.map(|_| scene_clear_color(scene, fallback_clear));
+        if let Some(clear) = letterbox_clear {
+            // The game's clear color covers its own screen only.
+            push_quad_vertices(
+                &mut vertices,
+                &mut spans,
+                SpanBinding::White,
+                crate::scene::RectF::new(0.0, 0.0, target[0] as f32, target[1] as f32),
+                surface_size,
+                [0.0, 0.0, 1.0, 1.0],
+                [clear.r as f32, clear.g as f32, clear.b as f32, 1.0],
+            );
+        }
         for command in &scene.commands {
             match command {
                 DrawCommand::Sprite(sprite) => {
@@ -668,7 +716,11 @@ impl WgpuBackend {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let clear = scene_clear_color(scene, fallback_clear);
+        let clear = if letterbox_clear.is_some() {
+            wgpu::Color::BLACK
+        } else {
+            scene_clear_color(scene, fallback_clear)
+        };
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -691,6 +743,14 @@ impl WgpuBackend {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            if let Some([x, y, w, h]) = self.viewport {
+                let x = x.min(self.config.width.saturating_sub(1));
+                let y = y.min(self.config.height.saturating_sub(1));
+                let w = w.min(self.config.width - x).max(1);
+                let h = h.min(self.config.height - y).max(1);
+                pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
+                pass.set_scissor_rect(x, y, w, h);
+            }
             pass.set_pipeline(&self.pipelines[1]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             for (span_index, span) in spans.iter().enumerate() {

@@ -417,10 +417,9 @@ impl PalFontSystem {
     fn native_baseline(&self) -> i32 {
         self.bitmap("").map_or_else(
             || {
-                self.fallback
-                    .font
-                    .as_scaled(PxScale::from(self.fallback_scale()))
-                    .ascent() as i32
+                self.fallback.font.as_ref().map_or(0, |font| {
+                    font.as_scaled(PxScale::from(self.fallback_scale())).ascent() as i32
+                })
             },
             |font| font.baseline(self.layout_font_size()),
         )
@@ -442,13 +441,20 @@ impl PalFontSystem {
             }
         }
         let scale = PxScale::from(self.fallback_scale());
-        let id = self.fallback.font.glyph_id(ch);
-        let advance = self.fallback.font.as_scaled(scale).h_advance(id).trunc() as i32 as i16;
+        let Some(face) = self.fallback.font.as_ref() else {
+            return Ok(bitmap::BitmapGlyph {
+                metrics: PalBitmapGlyphRecord32::default(),
+                stride: 0,
+                coverage: Vec::new(),
+            });
+        };
+        let id = face.glyph_id(ch);
+        let advance = face.as_scaled(scale).h_advance(id).trunc() as i32 as i16;
         let mut metrics = PalBitmapGlyphRecord32 {
             cell_inc_x: advance,
             ..Default::default()
         };
-        let Some(outline) = self.fallback.font.outline_glyph(id.with_scale(scale)) else {
+        let Some(outline) = face.outline_glyph(id.with_scale(scale)) else {
             return Ok(bitmap::BitmapGlyph {
                 metrics,
                 stride: 0,

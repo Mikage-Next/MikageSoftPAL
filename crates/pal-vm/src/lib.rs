@@ -23,7 +23,7 @@ pub mod list;
 pub mod memory;
 pub mod msprite;
 pub mod platform_time;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "gpu")]
 pub mod renderer;
 pub mod runtime;
 mod save_format;

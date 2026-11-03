@@ -18574,7 +18574,7 @@ mod tests {
             "SourceHanSerif-Medium.ttf",
         ];
         for name in shipped {
-            std::fs::write(fonts.join(name), include_bytes!("default.ttf")).unwrap();
+            std::fs::write(fonts.join(name), crate::font::test_face_bytes()).unwrap();
         }
         let (assets, points) = empty_core_assets(true);
         let mut runtime = ScriptRuntime::boot(12, ScriptRuntimeConfig::default());
@@ -18607,7 +18607,7 @@ mod tests {
         let fonts = root.join("fonts");
         std::fs::create_dir_all(&fonts).unwrap();
         let face = fonts.join("SomeSansCN.ttf");
-        std::fs::write(&face, include_bytes!("default.ttf")).unwrap();
+        std::fs::write(&face, crate::font::test_face_bytes()).unwrap();
         let (assets, points) = empty_core_assets(false);
         let mut runtime = ScriptRuntime::boot(12, ScriptRuntimeConfig::default());
         runtime.text_lang = TextLang::Cn;
