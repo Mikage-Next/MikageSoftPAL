@@ -264,3 +264,86 @@ mod tests {
         assert!(!has_export(b"MZPalSystemPathInit\0", b"PalSystemPathInit"));
     }
 }
+
+/// The value a SoftPAL game executable hides for its start-up check.
+///
+/// Category 18 index 17 of the game's extcall table (`sub_413170` in
+/// koikake.exe, `sub_4110A0` in MAJOKOI.exe) pops no VM argument and returns
+/// what `sub_437AE0`/`sub_430B70` decodes from the executable's own image: a
+/// record after the marker `/**/`, whose first dword XOR 0xFEFEFDFC holds the
+/// same 16-bit key twice, then 12 bytes. Four of them, starting at the key's
+/// high byte, form a dword that is rotated left by its low byte and XORed
+/// byte-wise with 0x19810419; then its lowest and highest bytes swap. The
+/// script compares it with a constant (魔女こいにっき: 4208) and quits on a
+/// mismatch. Executables in the game folder are tried in name order.
+pub(crate) fn read_game_token(root: &Path) -> Option<i32> {
+    let mut exes: Vec<_> = std::fs::read_dir(root)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+        })
+        .collect();
+    exes.sort();
+    exes.into_iter().find_map(|path| {
+        let bytes = std::fs::read(&path).ok()?;
+        let token = decode_game_token(&bytes)?;
+        log::info!("game token {token} from {}", path.display());
+        Some(token)
+    })
+}
+
+fn decode_game_token(image: &[u8]) -> Option<i32> {
+    // The native scan walks backwards from the end of its data, so the last
+    // valid record wins.
+    let mut found = None;
+    let mut at = 0;
+    while let Some(offset) = image[at..].windows(4).position(|w| w == b"/**/") {
+        let record = at + offset + 4;
+        at = record;
+        let Some(bytes) = image.get(record..record + 16) else {
+            break;
+        };
+        let header = u32::from_le_bytes(bytes[0..4].try_into().ok()?) ^ 0xFEFE_FDFC;
+        let key = (header >> 16) as u16;
+        if key != header as u16 {
+            continue;
+        }
+        let table = &bytes[4..16];
+        let start = usize::from(key >> 8);
+        let mut value = 0u32;
+        for i in 0..4 {
+            value |= u32::from(table[(start + i) % 12]) << ((3 - i) * 8);
+        }
+        let mut value = value.rotate_left(u32::from(key as u8) & 31);
+        let mut mask = 0x1981_0419u32;
+        for _ in 0..4 {
+            value = (value & !0xFF) | ((value ^ mask) & 0xFF);
+            value = value.rotate_right(8);
+            mask = mask.rotate_right(8);
+        }
+        let low = value & 0xFF;
+        let high = value >> 24;
+        value = (value & 0x00FF_FF00) | (low << 24) | high;
+        found = Some(value as i32);
+    }
+    found
+}
+
+#[cfg(test)]
+mod game_token_tests {
+    use super::decode_game_token;
+
+    #[test]
+    fn decodes_majokoi_record() {
+        // The record in MAJOKOI.exe (file offset 0x51A60).
+        let mut image = b"padding/**/".to_vec();
+        let header = 0x021F_021Fu32 ^ 0xFEFE_FDFC;
+        image.extend_from_slice(&header.to_le_bytes());
+        image.extend_from_slice(&[0xcc, 0x1b, 0xd3, 0x02, 0x28, 0x32, 0x6d, 0x7f, 0x2f, 0x74, 0x9e, 0x1c]);
+        assert_eq!(decode_game_token(&image), Some(4208));
+        assert_eq!(decode_game_token(b"no record here"), None);
+    }
+}

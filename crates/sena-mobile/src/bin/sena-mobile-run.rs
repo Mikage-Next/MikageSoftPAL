@@ -3,7 +3,7 @@
 //!
 //! sena-mobile-run <game> [--frames N] [--encoding auto|sjis|gbk] [--lang auto|jp|cn|tc]
 //!     [--font PATH] [--tap FRAME:X:Y] [--right FRAME:X:Y] [--key FRAME:VK]
-//!     [--wheel FRAME:NOTCHES] [--auto-click EVERY] [--png FRAME:PATH] [--log LEVEL]
+//!     [--wheel FRAME:NOTCHES] [--auto-click EVERY[:FROM]] [--png FRAME:PATH] [--log LEVEL]
 //!     [--saves DIR]
 use std::ffi::{c_char, c_void, CStr, CString};
 
@@ -27,6 +27,7 @@ fn main() {
     let (mut taps, mut rights, mut keys, mut wheels, mut pngs) = (vec![], vec![], vec![], vec![], vec![]);
     let mut font = None;
     let mut saves: Option<CString> = None;
+    let mut auto_from = 0u32;
     let mut i = 2;
     while i < args.len() {
         let v = args.get(i + 1).cloned().unwrap_or_default();
@@ -40,7 +41,11 @@ fn main() {
             "--right" => rights.push(parse3(&v)),
             "--key" => { let p: Vec<&str> = v.split(':').collect(); keys.push((p[0].parse::<u32>().unwrap(), i32::from_str_radix(p[1].trim_start_matches("0x"), 16).unwrap())) }
             "--wheel" => { let p: Vec<&str> = v.split(':').collect(); wheels.push((p[0].parse::<u32>().unwrap(), p[1].parse::<i32>().unwrap())) }
-            "--auto-click" => auto_click = v.parse().unwrap(),
+            "--auto-click" => {
+                let (every, from) = v.split_once(':').unwrap_or((v.as_str(), "0"));
+                auto_click = every.parse().unwrap();
+                auto_from = from.parse().unwrap();
+            }
             "--png" => { let (f, p) = v.split_once(':').unwrap(); pngs.push((f.parse::<u32>().unwrap(), p.to_owned())) }
             "--log" => level = v.parse().unwrap(),
             other => panic!("unknown option {other}"),
@@ -88,8 +93,8 @@ fn main() {
                 if f + 2 == frame { sena_mobile_key(session, vk, 0); }
             }
             for &(f, n) in &wheels { if f == frame { sena_mobile_wheel(session, n); } }
-            if auto_click > 0 && frame % auto_click == 0 { sena_mobile_pointer(session, 1, w as f32 / 2.0, h as f32 - 80.0); }
-            if auto_click > 0 && frame % auto_click == 2 { sena_mobile_pointer(session, 2, w as f32 / 2.0, h as f32 - 80.0); }
+            if auto_click > 0 && frame >= auto_from && frame % auto_click == 0 { sena_mobile_pointer(session, 1, w as f32 / 2.0, h as f32 - 80.0); }
+            if auto_click > 0 && frame >= auto_from && frame % auto_click == 2 { sena_mobile_pointer(session, 2, w as f32 / 2.0, h as f32 - 80.0); }
             let status = sena_mobile_step(session, 16);
             std::thread::sleep(std::time::Duration::from_millis(2));
             sena_mobile_audio_render(audio, pcm.as_mut_ptr(), 768);

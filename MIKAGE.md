@@ -29,6 +29,13 @@ Work happens on the `mikage` branch; `main` mirrors upstream.
   portable `sena_rs/` ones) can go to a folder of the host's instead of the
   game folder's `save/`. `SenaMobileConfig.save_dir` sets it; a new folder
   first gets a copy of the original's `save/`, so Windows saves still load.
+- Older engine builds (魔女こいにっき, 2014): extcall 18:17 pops nothing and
+  returns a value the game executable hides after a `/**/` marker, which the
+  script's start-up check compares with a constant
+  (`native_profile::read_game_token`). se_load, se_play and se_unload pop
+  three, three and one values, as koikake.exe and MAJOKOI.exe do.
+  `SENA_ARITY_AUDIT=1` prints extcalls whose handler popped a different
+  count than the native one (`runtime/native_arity.rs`).
 - Upstream's GitHub workflows are removed on this branch, so pushes do not
   start the console builds.
 
@@ -47,3 +54,4 @@ game folder's `save/`. Mikage passes the game folder's `savedata/`.
 
 - 恋×シンアイ彼女 (Koikake, 2015, Japanese): title, GAME START and the first
   story lines headless through `sena-mobile`.
+- 魔女こいにっき (2014, Japanese): logo, title, the prologue's narration.

@@ -43,6 +43,7 @@ mod tests {
                 extended_softpal: false,
             native_build: Default::default(),
             registered_softpal: false,
+            game_token: None,
                 point_table: points.clone(),
                 graphic_index: None,
             },

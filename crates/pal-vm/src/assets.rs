@@ -32,6 +32,9 @@ pub struct CoreAssets {
     /// The newer DLL capability set accompanies the registered command table.
     /// Its overlapping extcall coordinates need a separate dispatch profile.
     pub registered_softpal: bool,
+    /// The value the game executable hides for the script's start-up check
+    /// (18:17), read from the executable in the game folder.
+    pub game_token: Option<i32>,
     pub point_table: PointTable,
     pub graphic_index: Option<GraphicIndex>,
 }
@@ -110,6 +113,7 @@ impl CoreAssets {
             script_entry_pc,
             extended_softpal,
             registered_softpal,
+            game_token: native_profile::read_game_token(resource_manager.root()),
             point_table,
             graphic_index,
         })

@@ -45,6 +45,7 @@ mod tests {
             extended_softpal: false,
             native_build: Default::default(),
             registered_softpal: false,
+            game_token: None,
             point_table: PointTable::parse(&points).unwrap(),
             graphic_index: None,
         }

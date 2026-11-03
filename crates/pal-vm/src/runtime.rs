@@ -41,6 +41,7 @@ use crate::task::{TaskHandle, TaskSystem};
 use crate::PalSheetAnimationDesc;
 
 mod actions;
+mod native_arity;
 use actions::ActionSubsystemState;
 mod history_query;
 mod host_queries;
@@ -4383,6 +4384,7 @@ impl ScriptRuntime {
                 }
                 // Check if there is a Rust handler; if not, null-handler semantics: write 0 to
                 // dst and continue (matches original behavior for null-category dispatches).
+                let stack_before_ext = self.stack.len();
                 let result = self.dispatch_extcall(
                     category,
                     index,
@@ -4401,6 +4403,14 @@ impl ScriptRuntime {
                     result,
                     self.stack
                 ));
+                if native_arity::audit_enabled() && !matches!(result, ExtCallOutcome::Skip | ExtCallOutcome::Block) {
+                    let popped = stack_before_ext as isize - self.stack.len() as isize;
+                    if let Some(n) = native_arity::native_pop_count(category, index) {
+                        if popped != n as isize {
+                            eprintln!("ARITY ext_{category}_{index} {} popped={popped} native={n} pc=0x{insn_pc:X}", name.unwrap_or("?"));
+                        }
+                    }
+                }
                 match result {
                     ExtCallOutcome::Continue => {}
                     ExtCallOutcome::Yield { value } => {
@@ -5545,7 +5555,7 @@ impl ScriptRuntime {
                 13 => self.ext_process_checkpoint_set(),
                 14 => self.ext_update_access(assets, nls),
                 15 => self.ext_system_task_value(),
-                17 => self.ext_work_process_value(),
+                17 => self.ext_work_process_value(assets),
                 18 => self.ext_string_replace(assets, nls),
                 21 => self.ext_strlenf(assets, nls),
                 28 => self.ext_attach_work_process(),
@@ -9803,7 +9813,7 @@ impl ScriptRuntime {
     ) -> ExtCallOutcome {
         match index {
             0 | 1 | 2 => self.ext_se_play(index, assets, nls, resource_manager, audio),
-            3 => self.ext_audio_stop(5, PalSoundGroup::GROUP4, audio),
+            3 => self.ext_audio_stop(5, PalSoundGroup::GROUP4, audio, 2),
             4 => {
                 let args = self.pop_ext_args(2);
                 let volume = args.first().copied().unwrap_or(100);
@@ -9828,7 +9838,13 @@ impl ScriptRuntime {
                 let slot = args.first().copied().unwrap_or(0);
                 ExtCallOutcome::Value(self.se_volume_percent.get(&slot).copied().unwrap_or(100))
             }
-            6 => self.ext_audio_stop(5, PalSoundGroup::GROUP4, audio),
+            // se_unload pops only the slot (-1: all) in koikake.exe and
+            // MAJOKOI.exe (sub_420A30); the registered builds keep the
+            // two-value form.
+            6 => {
+                let argc = if assets.registered_softpal { 2 } else { 1 };
+                self.ext_audio_stop(5, PalSoundGroup::GROUP4, audio, argc)
+            }
             7 => self.ext_se_wait(audio),
             14 => self.ext_se_mute(audio),
             _ => ExtCallOutcome::Skip,
@@ -9852,7 +9868,7 @@ impl ScriptRuntime {
     ) -> ExtCallOutcome {
         match index {
             0 => self.ext_voice_play(assets, nls, resource_manager, audio),
-            1 => self.ext_audio_stop(13, PalSoundGroup::GROUP1, audio),
+            1 => self.ext_audio_stop(13, PalSoundGroup::GROUP1, audio, 2),
             2 => {
                 let args = self.pop_ext_args(1);
                 self.text_state.voice_volume = clamp_percent(args.first().copied().unwrap_or(100));
@@ -13875,13 +13891,18 @@ impl ScriptRuntime {
         resource_manager: Option<&mut ResourceManager>,
         audio: Option<&mut AudioSystem>,
     ) -> ExtCallOutcome {
+        // koikake.exe and MAJOKOI.exe (sub_421280, sub_4210D0) pop three
+        // values for both: se_load(kind, slot, name) and
+        // se_play(volume, flags, slot), as the later extended scripts do.
+        // The two- and five-value forms stay for the registered builds.
+        let three_values = assets.extended_softpal || !assets.registered_softpal;
         if index == 0 {
-            let arity = if assets.extended_softpal { 3 } else { 2 };
+            let arity = if three_values { 3 } else { 2 };
             let args = self.pop_ext_args(arity);
             if args.len() < arity {
                 return ExtCallOutcome::Block;
             }
-            let (slot, name_value) = if assets.extended_softpal {
+            let (slot, name_value) = if three_values {
                 (args[1], args[0])
             } else {
                 (args[0], args[1])
@@ -13902,14 +13923,17 @@ impl ScriptRuntime {
                 0,
             );
         }
-        if index == 1 && assets.extended_softpal {
+        if index == 1 && three_values {
             let args = self.pop_ext_args(3);
             if args.len() < 3 {
                 return ExtCallOutcome::Block;
             }
             let slot = args[0];
+            // The extended scripts pass the loop switch last; the classic
+            // handler reads it from bit 0 of the flags.
+            let looped = if assets.extended_softpal { args[2] != 0 } else { args[1] & 1 != 0 };
             if let (Some(audio), Some(handle)) = (audio, self.game_audio.get(&(5, slot)).copied()) {
-                let _ = audio.play(handle, args[2] != 0);
+                let _ = audio.play(handle, looped);
             }
             return ExtCallOutcome::Value(1);
         }
@@ -14173,8 +14197,9 @@ impl ScriptRuntime {
         category: u16,
         group: PalSoundGroup,
         audio: Option<&mut AudioSystem>,
+        argc: usize,
     ) -> ExtCallOutcome {
-        let args = self.pop_ext_args(2);
+        let args = self.pop_ext_args(argc);
         let slot = args.first().copied().unwrap_or(-1);
         log::debug!("[trace-audio] stop category={category} slot={slot}");
         let Some(audio) = audio else {
@@ -14879,18 +14904,23 @@ impl ScriptRuntime {
         ExtCallOutcome::Value(1)
     }
 
-    /// Game category 18 index 17 (`sub_417AF0`) calls the native work-process
-    /// value helper and sets the script dirty flag.  The exact PAL helper still
-    /// needs deeper struct modeling; returning the supplied value preserves the
-    /// wrapper's comparison semantics instead of a silent fallback.
-    fn ext_work_process_value(&mut self) -> ExtCallOutcome {
-        let args = self.pop_ext_args(1);
-        if args.len() != 1 {
-            return ExtCallOutcome::Block;
-        }
+    /// Game category 18 index 17 pops no VM argument and returns the value
+    /// the game executable hides for the script's start-up check (see
+    /// `native_profile::read_game_token`), setting the script dirty flag.
+    /// The check function passes the value it expects as its own argument,
+    /// so without a readable executable that argument stands in.
+    fn ext_work_process_value(&mut self, assets: &CoreAssets) -> ExtCallOutcome {
+        self.pop_ext_args(0);
         self.work_process_attached = true;
-        let value = args[0];
-        log::debug!("[trace-system] work_process_value arg={value} -> {value}");
+        let value = match assets.game_token {
+            Some(token) => token,
+            None => {
+                let expected = self.read_argument_stack(1).unwrap_or(0);
+                log::warn!("no game token in the executable; answering {expected}");
+                expected
+            }
+        };
+        log::debug!("[trace-system] game_token -> {value}");
         ExtCallOutcome::Value(value)
     }
 
@@ -18974,6 +19004,7 @@ mod tests {
             extended_softpal: false,
             native_build: Default::default(),
             registered_softpal: false,
+            game_token: None,
             point_table: points.clone(),
             graphic_index: None,
         };
@@ -19156,6 +19187,7 @@ mod tests {
             extended_softpal: false,
             native_build: Default::default(),
             registered_softpal: false,
+            game_token: None,
             point_table: points.clone(),
             graphic_index: None,
         };
@@ -19232,7 +19264,7 @@ mod tests {
         assert_eq!(audio.loaded_channel_count(PalSoundGroup::GROUP1), 2);
         // voice_stop(-1) uses the same map and releases the complete group.
         runtime.stack = vec![0, -1];
-        runtime.ext_audio_stop(13, PalSoundGroup::GROUP1, Some(&mut audio));
+        runtime.ext_audio_stop(13, PalSoundGroup::GROUP1, Some(&mut audio), 2);
         assert!(runtime.game_audio.is_empty());
         assert_eq!(audio.loaded_channel_count(PalSoundGroup::GROUP1), 0);
         std::fs::remove_dir_all(root).unwrap();
@@ -20245,6 +20277,7 @@ mod tests {
             extended_softpal: false,
             native_build: Default::default(),
             registered_softpal: false,
+            game_token: None,
             point_table: PointTable::parse(&[]).expect("empty Point.dat should parse"),
             graphic_index: None,
         };
