@@ -25,6 +25,10 @@ Work happens on the `mikage` branch; `main` mirrors upstream.
   desktop builds use the system CJK font paths. Tests need a system CJK font
   (Linux: `apt install fonts-noto-cjk`).
 - `AudioSink::render_f32` for the pulled output.
+- `pal_vm::set_save_directory`: saves (the original's files and the
+  portable `sena_rs/` ones) can go to a folder of the host's instead of the
+  game folder's `save/`. `SenaMobileConfig.save_dir` sets it; a new folder
+  first gets a copy of the original's `save/`, so Windows saves still load.
 - Upstream's GitHub workflows are removed on this branch, so pushes do not
   start the console builds.
 
@@ -36,7 +40,8 @@ target/release/sena-mobile-run <game> --frames 2600 --tap 1505:150:260 --png 259
 cargo check -p sena-mobile --target aarch64-apple-ios
 ```
 
-Saves stay where the original engine keeps them: the game folder's `save/`.
+Without `--saves DIR`, saves stay where the original engine keeps them: the
+game folder's `save/`. Mikage passes the game folder's `savedata/`.
 
 ## Games
 

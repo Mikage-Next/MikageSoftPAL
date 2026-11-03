@@ -118,8 +118,26 @@ pub fn original_save_filename(slot: i32) -> String {
     }
 }
 
+static SAVE_DIRECTORY: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// Moves the saves of the games opened afterwards out of `<game>/save`, the
+/// original's folder, into `dir`; `None` goes back to it. A host app that
+/// keeps saves in a folder of its own sets this before opening a game.
+pub fn set_save_directory(dir: Option<PathBuf>) {
+    *SAVE_DIRECTORY.write().unwrap_or_else(|e| e.into_inner()) = dir;
+}
+
+/// The folder the game's saves (original and portable) go to.
+pub fn save_directory(root: &Path) -> PathBuf {
+    SAVE_DIRECTORY
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_else(|| root.join("save"))
+}
+
 pub fn original_save_path(root: &Path, slot: i32) -> PathBuf {
-    root.join("save").join(original_save_filename(slot))
+    save_directory(root).join(original_save_filename(slot))
 }
 
 pub fn encode_original_save(prefix: &OriginalSavePrefix, snapshot: &[u8]) -> Vec<u8> {

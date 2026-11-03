@@ -16346,7 +16346,7 @@ fn find_loose_save_file(root: &Path, filename: &str) -> Option<PathBuf> {
         root.join("存档").join(filename),
         root.join("補丁").join("存档").join(filename),
         root.join("patch").join("save").join(filename),
-        root.join("save").join(filename),
+        crate::save_format::save_directory(root).join(filename),
     ];
     candidates.into_iter().find(|path| path.is_file())
 }
@@ -16369,7 +16369,7 @@ fn write_save_lock_dword(path: &Path, value: i32) -> std::io::Result<()> {
 }
 
 fn portable_save_dir(root: &Path) -> PathBuf {
-    root.join("save").join("sena_rs")
+    crate::save_format::save_directory(root).join("sena_rs")
 }
 
 fn portable_save_path(root: &Path, slot: i32) -> PathBuf {

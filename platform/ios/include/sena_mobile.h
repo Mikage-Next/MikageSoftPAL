@@ -26,7 +26,11 @@ typedef struct SenaMobileAudio SenaMobileAudio;
 
 typedef struct {
     uint32_t struct_size;  /* sizeof(SenaMobileConfig) */
-    const char *game_dir;  /* the game folder (data.pac, *.pac); saves go to its save/ */
+    const char *game_dir;  /* the game folder (data.pac, *.pac) */
+    const char *save_dir;  /* where saves go, created if missing; NULL or "" for
+                              the game folder's save/ like the original. A new
+                              folder gets a copy of the original's save/ first,
+                              so its saves still load. */
     uint32_t encoding;     /* one of SENA_MOBILE_ENCODING_* */
     uint32_t language;     /* one of SENA_MOBILE_LANGUAGE_* */
 } SenaMobileConfig;

@@ -167,5 +167,5 @@ impl ScriptRuntime {
 }
 
 fn history_directory(root: &Path) -> PathBuf {
-    root.join("save").join("sena_rs").join("history")
+    crate::save_format::save_directory(root).join("sena_rs").join("history")
 }

@@ -10,6 +10,7 @@
 pub mod audio;
 pub mod log;
 pub mod patch;
+pub mod saves;
 pub mod session;
 
 use std::cell::RefCell;
@@ -30,6 +31,7 @@ pub const ABI_VERSION: u32 = 1;
 pub struct SenaMobileConfig {
     pub struct_size: u32,
     pub game_dir: *const c_char,
+    pub save_dir: *const c_char,
     pub encoding: u32,
     pub language: u32,
 }
@@ -198,6 +200,15 @@ pub unsafe extern "C" fn sena_mobile_open(config: *const SenaMobileConfig) -> *m
             return std::ptr::null_mut();
         };
         let game_dir = PathBuf::from(game_dir);
+        let save_dir = unsafe { str_arg(config.save_dir) }
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from);
+        if let Some(save_dir) = &save_dir {
+            if let Err(err) = saves::adopt_original(&game_dir, save_dir) {
+                log::emit(log::WARN, &format!("original saves not copied: {err:#}"));
+            }
+        }
+        pal_vm::set_save_directory(save_dir);
         let found = patch::detect(&game_dir);
         let nls = match config.encoding {
             ENCODING_SHIFT_JIS => Nls::ShiftJis,

@@ -4,6 +4,7 @@
 //! sena-mobile-run <game> [--frames N] [--encoding auto|sjis|gbk] [--lang auto|jp|cn|tc]
 //!     [--font PATH] [--tap FRAME:X:Y] [--right FRAME:X:Y] [--key FRAME:VK]
 //!     [--wheel FRAME:NOTCHES] [--auto-click EVERY] [--png FRAME:PATH] [--log LEVEL]
+//!     [--saves DIR]
 use std::ffi::{c_char, c_void, CStr, CString};
 
 use sena_mobile::*;
@@ -25,6 +26,7 @@ fn main() {
     let (mut frames, mut encoding, mut language, mut auto_click, mut level) = (600u32, 0u32, 0u32, 0u32, 2i32);
     let (mut taps, mut rights, mut keys, mut wheels, mut pngs) = (vec![], vec![], vec![], vec![], vec![]);
     let mut font = None;
+    let mut saves: Option<CString> = None;
     let mut i = 2;
     while i < args.len() {
         let v = args.get(i + 1).cloned().unwrap_or_default();
@@ -33,6 +35,7 @@ fn main() {
             "--encoding" => encoding = match v.as_str() { "sjis" => 1, "gbk" => 2, "utf8" => 3, _ => 0 },
             "--lang" => language = match v.as_str() { "jp" => 1, "cn" => 2, "tc" => 3, _ => 0 },
             "--font" => font = Some(v),
+            "--saves" => saves = Some(CString::new(v).unwrap()),
             "--tap" => taps.push(parse3(&v)),
             "--right" => rights.push(parse3(&v)),
             "--key" => { let p: Vec<&str> = v.split(':').collect(); keys.push((p[0].parse::<u32>().unwrap(), i32::from_str_radix(p[1].trim_start_matches("0x"), 16).unwrap())) }
@@ -53,6 +56,7 @@ fn main() {
         let config = SenaMobileConfig {
             struct_size: std::mem::size_of::<SenaMobileConfig>() as u32,
             game_dir: game.as_ptr(),
+            save_dir: saves.as_ref().map_or(std::ptr::null(), |dir| dir.as_ptr()),
             encoding,
             language,
         };

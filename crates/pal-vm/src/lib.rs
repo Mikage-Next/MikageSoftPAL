@@ -27,6 +27,7 @@ pub mod platform_time;
 pub mod renderer;
 pub mod runtime;
 mod save_format;
+pub use save_format::set_save_directory;
 pub mod scene;
 pub mod sprite;
 pub mod system;
