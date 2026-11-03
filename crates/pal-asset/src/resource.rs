@@ -13,6 +13,22 @@ use crate::vfs;
 pub enum AssetSource {
     Loose { path: PathBuf },
     Pac { pac_path: PathBuf, key: PacKey },
+    /// A translation patch's loose file, kept in the game's own (still
+    /// encrypted) form as the patched executable reads it.
+    Patch { path: PathBuf },
+}
+
+/// A translation patch that shadows the game's archives with loose files,
+/// the way patch launchers redirect the executable's file reads.
+#[derive(Clone, Debug, Default)]
+pub struct GamePatch {
+    /// Folders, relative to the game root, searched before every archive.
+    pub overlay_dirs: Vec<String>,
+    /// The patch's text code map: `TEXT.DAT` keeps its Chinese text in
+    /// Shift-JIS-shaped double-byte codes that the patch's font hook maps to
+    /// GBK (Longinus `CHS.TBL`, indexed by code). Text read from the patch is
+    /// rewritten through it, so it reads as GBK.
+    pub text_code_map: Option<Vec<u16>>,
 }
 
 #[derive(Clone, Debug)]
@@ -30,6 +46,9 @@ pub struct ResourceManager {
     pacs: HashMap<PathBuf, PacArchive>,
     language_archive: Option<String>,
     last_path_wins: bool,
+    patch: GamePatch,
+    /// The patch folders' files by lower-case name, first folder first.
+    patch_files: HashMap<String, PathBuf>,
 }
 
 impl ResourceManager {
@@ -41,6 +60,8 @@ impl ResourceManager {
             pacs: HashMap::new(),
             language_archive: None,
             last_path_wins: false,
+            patch: GamePatch::default(),
+            patch_files: HashMap::new(),
         }
     }
 
@@ -108,6 +129,28 @@ impl ResourceManager {
         Ok(())
     }
 
+    /// Applies a translation patch to every later lookup.
+    /// The folders are listed once here, so names match whatever their case.
+    pub fn set_patch(&mut self, patch: GamePatch) {
+        self.patch_files.clear();
+        for dir in &patch.overlay_dirs {
+            let Ok(entries) = std::fs::read_dir(join_pal_path(&self.root, dir)) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                    let name = entry.file_name().to_string_lossy().to_lowercase();
+                    self.patch_files.entry(name).or_insert_with(|| entry.path());
+                }
+            }
+        }
+        self.patch = patch;
+    }
+
+    pub fn patch(&self) -> &GamePatch {
+        &self.patch
+    }
+
     pub fn last_path_wins(&self) -> bool {
         self.last_path_wins
     }
@@ -171,6 +214,15 @@ impl ResourceManager {
     pub fn open(&mut self, name: &str) -> Result<LoadedAsset> {
         let key = make_pac_key(name, self.nls)?;
 
+        if let Some(path) = self.patch_files.get(&name.to_lowercase()).cloned() {
+            let bytes = vfs::read_all(&path)?;
+            return Ok(LoadedAsset {
+                name: name.to_owned(),
+                bytes,
+                source: AssetSource::Patch { path },
+            });
+        }
+
         let mut paths = self.paths.clone();
         if self.last_path_wins {
             paths.reverse();
@@ -194,8 +246,14 @@ impl ResourceManager {
         let mut asset = self.open(name)?;
         // Loose files are already decrypted by the PAC unpacker; only PAC-sourced
         // data carries the raw (encrypted) payload and needs the dollar-file transform.
-        if matches!(asset.source, AssetSource::Pac { .. }) {
+        // A patch's files are in the game's own form, like the PAC payload.
+        if matches!(asset.source, AssetSource::Pac { .. } | AssetSource::Patch { .. }) {
             decrypt_pal_dollar_file(name, &mut asset.bytes)?;
+        }
+        if let (AssetSource::Patch { .. }, Some(map)) = (&asset.source, &self.patch.text_code_map) {
+            if name.eq_ignore_ascii_case("text.dat") {
+                map_text_list_codes(&mut asset.bytes, map);
+            }
         }
         Ok(asset)
     }
@@ -317,4 +375,50 @@ fn append_pac_extension(path: &Path) -> PathBuf {
 fn has_parent_dir(path: &Path) -> bool {
     path.components()
         .any(|component| matches!(component, Component::ParentDir))
+}
+
+/// Rewrites the double-byte codes of a `$TEXT_LIST__` file's strings through
+/// `map` (indexed by code; 0 keeps the code). Records are a 4-byte id and a
+/// NUL-terminated string after the 16-byte header. A lead byte is any byte
+/// from 0x80 to 0xFE, as the patched executable takes them; every code keeps
+/// its two bytes, so record offsets do not move.
+pub fn map_text_list_codes(bytes: &mut [u8], map: &[u16]) {
+    if !bytes.starts_with(b"$TEXT_LIST__") {
+        return;
+    }
+    let mut position = 0x10;
+    while position + 4 < bytes.len() {
+        position += 4;
+        while position < bytes.len() && bytes[position] != 0 {
+            let lead = bytes[position];
+            if (0x80..=0xFE).contains(&lead) && position + 1 < bytes.len() && bytes[position + 1] != 0 {
+                let code = u16::from_be_bytes([lead, bytes[position + 1]]);
+                if let Some(&mapped) = map.get(usize::from(code)).filter(|&&mapped| mapped > 0xFF) {
+                    bytes[position..position + 2].copy_from_slice(&mapped.to_be_bytes());
+                }
+                position += 2;
+            } else {
+                position += 1;
+            }
+        }
+        position += 1;
+    }
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::map_text_list_codes;
+
+    #[test]
+    fn maps_double_byte_codes_in_place() {
+        let mut map = vec![0u16; 0xF000];
+        map[0x8140] = 0xA1A1;
+        map[0x889F] = 0xB0A1;
+        let mut bytes = b"$TEXT_LIST__\x02\0\0\0".to_vec();
+        bytes.extend_from_slice(&[0, 0, 0, 0, b'A', 0x81, 0x40, 0x88, 0x9F, 0]);
+        bytes.extend_from_slice(&[1, 0, 0, 0, 0x88, 0x9F, 0]);
+        map_text_list_codes(&mut bytes, &map);
+        assert_eq!(&bytes[0x14..0x1A], &[b'A', 0xA1, 0xA1, 0xB0, 0xA1, 0]);
+        assert_eq!(&bytes[0x1E..0x21], &[0xB0, 0xA1, 0]);
+    }
 }

@@ -16,6 +16,7 @@ pub struct Config {
     pub game_dir: PathBuf,
     pub nls: Nls,
     pub lang: TextLang,
+    pub patch: Option<pal_asset::GamePatch>,
 }
 
 pub enum Status {
@@ -58,6 +59,7 @@ impl Session {
             game_root: Some(config.game_dir),
             nls: config.nls,
             lang: config.lang,
+            patch: config.patch,
             ..Default::default()
         })?;
         let (width, height) = engine.logical_size_from_config(1280, 720);

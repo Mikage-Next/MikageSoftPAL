@@ -18093,6 +18093,7 @@ fn asset_source_label(source: &AssetSource) -> String {
     match source {
         AssetSource::Loose { path } => format!("loose:{}", path.display()),
         AssetSource::Pac { pac_path, .. } => format!("pac:{}", pac_path.display()),
+        AssetSource::Patch { path } => format!("patch:{}", path.display()),
     }
 }
 

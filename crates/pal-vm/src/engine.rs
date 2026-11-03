@@ -43,6 +43,8 @@ pub struct EngineConfig {
     pub script_runtime: ScriptRuntimeConfig,
     pub audio: AudioConfig,
     pub trace: TraceConfig,
+    /// A translation patch's loose files and text code map.
+    pub patch: Option<pal_asset::GamePatch>,
 }
 
 impl Default for EngineConfig {
@@ -55,6 +57,7 @@ impl Default for EngineConfig {
             script_runtime: ScriptRuntimeConfig::default(),
             audio: AudioConfig::default(),
             trace: TraceConfig::default(),
+            patch: None,
         }
     }
 }
@@ -101,6 +104,10 @@ impl Engine {
                         config.lang.archive_list(),
                         crate::assets::native_profile::has_registered_dispatch_exports(root),
                     )?;
+                    if let Some(patch) = config.patch.clone() {
+                        log::info!("translation patch folders {:?}", patch.overlay_dirs);
+                        resource_manager.set_patch(patch);
+                    }
                     // Releases that keep the whole PAL payload inside data.pac
                     // ship no loose SYSTEM.INI, so the logical size, font type
                     // and font names come from the archived copy. The loose

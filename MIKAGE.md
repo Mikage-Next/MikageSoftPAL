@@ -36,6 +36,12 @@ Work happens on the `mikage` branch; `main` mirrors upstream.
   three, three and one values, as koikake.exe and MAJOKOI.exe do.
   `SENA_ARITY_AUDIT=1` prints extcalls whose handler popped a different
   count than the native one (`runtime/native_arity.rs`).
+- Translation patches: `pal_asset::GamePatch` puts a patch's loose folders
+  ahead of every archive (their files are in the game's own encrypted form)
+  and maps `TEXT.DAT` codes through a code table. `sena-mobile` builds it from
+  a Longinus `Longinus.ini`: the `CreateFileA` redirect's folder, the
+  `GetGlyphOutline` `TBL` and `CodePage=936`, which also make the automatic
+  encoding GBK.
 - Upstream's GitHub workflows are removed on this branch, so pushes do not
   start the console builds.
 
@@ -54,4 +60,5 @@ game folder's `save/`. Mikage passes the game folder's `savedata/`.
 
 - 恋×シンアイ彼女 (Koikake, 2015, Japanese): title, GAME START and the first
   story lines headless through `sena-mobile`.
-- 魔女こいにっき (2014, Japanese): logo, title, the prologue's narration.
+- 魔女こいにっき (2014): logo, title, the prologue's narration, in Japanese
+  and with 爱丽丝后宫汉化组's Longinus patch (魔女恋爱日记) in Chinese.

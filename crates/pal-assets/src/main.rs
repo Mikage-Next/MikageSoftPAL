@@ -93,6 +93,7 @@ fn main() -> Result<()> {
             match &asset.source {
                 AssetSource::Loose { path } => eprintln!("source=loose:{}", path.display()),
                 AssetSource::Pac { pac_path, .. } => eprintln!("source=pac:{}", pac_path.display()),
+                AssetSource::Patch { path } => eprintln!("source=patch:{}", path.display()),
             }
             eprintln!("size={}", asset.bytes.len());
 

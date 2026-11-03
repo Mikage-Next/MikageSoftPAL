@@ -228,7 +228,7 @@ pub unsafe extern "C" fn sena_mobile_open(config: *const SenaMobileConfig) -> *m
                 }
             }
         };
-        match Session::open(Config { game_dir, nls, lang }) {
+        match Session::open(Config { game_dir, nls, lang, patch: found.patch }) {
             Ok(session) => Box::into_raw(Box::new(SenaMobileSession(session))),
             Err(err) => {
                 set_error(format!("{err:#}"));

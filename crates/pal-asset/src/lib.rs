@@ -22,4 +22,4 @@ pub use error::{AssetError, Result};
 pub use key::{make_pac_key, normalize_pal_name_bytes, PacKey};
 pub use nls::Nls;
 pub use pac::{PacArchive, PacBucket, PacEntry};
-pub use resource::{AssetSource, LoadedAsset, ResourceManager};
+pub use resource::{map_text_list_codes, AssetSource, GamePatch, LoadedAsset, ResourceManager};
