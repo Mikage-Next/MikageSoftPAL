@@ -178,13 +178,14 @@ impl Session {
         &self.status
     }
 
-    /// Surface pixels to the game's logical pixels.
+    /// Surface pixels to the game's logical pixels. A point in the black
+    /// bars (or the far-off point a host sends to cancel a touch) stays
+    /// outside the screen, where the engine reads it as no position, as
+    /// the original does for a cursor outside its window.
     fn to_logical(&self, x: f32, y: f32) -> (f64, f64) {
         let [vx, vy, vw, vh] = self.viewport.map(f64::from);
-        let lx = ((f64::from(x) - vx) * f64::from(self.logical[0]) / vw)
-            .clamp(0.0, f64::from(self.logical[0] - 1));
-        let ly = ((f64::from(y) - vy) * f64::from(self.logical[1]) / vh)
-            .clamp(0.0, f64::from(self.logical[1] - 1));
+        let lx = (f64::from(x) - vx) * f64::from(self.logical[0]) / vw;
+        let ly = (f64::from(y) - vy) * f64::from(self.logical[1]) / vh;
         (lx, ly)
     }
 

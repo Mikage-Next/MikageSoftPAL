@@ -108,7 +108,9 @@ void sena_mobile_detach_surface(SenaMobileSession *session);
 int32_t sena_mobile_step(SenaMobileSession *session, uint32_t dt_ms);
 
 /* The pointer, in drawable pixels of the surface. One of
- * SENA_MOBILE_POINTER_*. */
+ * SENA_MOBILE_POINTER_*. A point outside the game's screen (in the black
+ * bars, or far off to let go of a touch that became a gesture) is no
+ * position for the game, so a button released there clicks nothing. */
 void sena_mobile_pointer(SenaMobileSession *session, int32_t phase, float x, float y);
 /* Mouse wheel: positive notches up (the backlog), negative down. */
 void sena_mobile_wheel(SenaMobileSession *session, int32_t notches);
