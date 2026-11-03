@@ -82,11 +82,13 @@ typedef void (*sena_mobile_log_callback)(int32_t level, const char *target, cons
 void sena_mobile_set_log_callback(sena_mobile_log_callback callback, void *context, int32_t max_level);
 
 /* The text face for sessions opened after the call: a TTF, OTF or TTC file
- * and the face index in it. It draws the text the game's own bitmap font
+ * and the face in it, as a PostScript or family name ("HiraginoSans-W3") or a
+ * collection index ("2"); NULL or "" for the first face. It draws the text the game's own bitmap font
  * (DEFAULT_FONT.DAT) does not cover and the text of the system font types.
- * No face is bundled with the runtime. Returns 1, or 0 when the file is
- * missing or not a font (the previous face stays). */
-int32_t sena_mobile_register_font(const char *path, uint32_t index);
+ * No face is bundled with the runtime; the last face registered is used.
+ * Returns 1, or 0 when the file is missing, not a font or has no such face
+ * (the previous face stays). */
+int32_t sena_mobile_register_font(const char *path, const char *face);
 
 /* Opens and boots a game. NULL on failure (see sena_mobile_last_error). */
 SenaMobileSession *sena_mobile_open(const SenaMobileConfig *config);

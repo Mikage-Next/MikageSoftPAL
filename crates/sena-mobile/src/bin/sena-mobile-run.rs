@@ -48,7 +48,7 @@ fn main() {
         sena_mobile_set_log_callback(Some(print_log), std::ptr::null_mut(), level);
         if let Some(font) = font {
             let path = CString::new(font).unwrap();
-            assert_eq!(sena_mobile_register_font(path.as_ptr(), 0), 1);
+            assert_eq!(sena_mobile_register_font(path.as_ptr(), std::ptr::null()), 1);
         }
         let config = SenaMobileConfig {
             struct_size: std::mem::size_of::<SenaMobileConfig>() as u32,

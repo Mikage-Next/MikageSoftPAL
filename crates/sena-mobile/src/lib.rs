@@ -126,14 +126,40 @@ pub extern "C" fn sena_mobile_set_log_callback(
     guard((), || log::set(callback, context, max_level))
 }
 
+/// The index in `bytes` (a font or a collection) of `face`: a collection
+/// index ("2"), a PostScript or family name, or "" for the first face.
+fn face_index(bytes: &[u8], face: &str) -> Option<u32> {
+    let face = face.trim();
+    if face.is_empty() {
+        return Some(0);
+    }
+    if let Ok(index) = face.parse::<u32>() {
+        return Some(index);
+    }
+    let count = ttf_parser::fonts_in_collection(bytes).unwrap_or(1);
+    (0..count).find(|&index| {
+        ttf_parser::Face::parse(bytes, index).is_ok_and(|parsed| {
+            parsed.names().into_iter().any(|name| {
+                matches!(
+                    name.name_id,
+                    ttf_parser::name_id::POST_SCRIPT_NAME
+                        | ttf_parser::name_id::FAMILY
+                        | ttf_parser::name_id::FULL_NAME
+                ) && name.to_string().is_some_and(|text| text == face)
+            })
+        })
+    })
+}
+
 #[no_mangle]
-pub unsafe extern "C" fn sena_mobile_register_font(path: *const c_char, index: u32) -> i32 {
+pub unsafe extern "C" fn sena_mobile_register_font(path: *const c_char, face: *const c_char) -> i32 {
     guard(0, || {
         clear_error();
         let Some(path) = (unsafe { str_arg(path) }) else {
             set_error("no font path");
             return 0;
         };
+        let face = unsafe { str_arg(face) }.unwrap_or("");
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
             Err(err) => {
@@ -141,8 +167,12 @@ pub unsafe extern "C" fn sena_mobile_register_font(path: *const c_char, index: u
                 return 0;
             }
         };
+        let Some(index) = face_index(&bytes, face) else {
+            set_error(format!("{path} has no face {face}"));
+            return 0;
+        };
         if pal_vm::font::set_host_fallback_font(bytes, index) {
-            log::emit(log::INFO, &format!("text face {path} #{index}"));
+            log::emit(log::INFO, &format!("text face {path} #{index} {face}"));
             1
         } else {
             set_error(format!("{path} is not a usable font"));
