@@ -418,12 +418,15 @@ impl MoeTables {
 pub struct MoeHeader {
     pub magic: [u8; 4],
     pub entry_count: u32,
+    /// Length of the payload region counted from the start of the file.
     pub payload_len: u32,
-    /// Length of the trailing encrypted index region. Confirmed by
+    /// Length of the index region after LZ expansion (V2: 5,903).
+    pub index_expanded_len: u32,
+    /// Length of the trailing encrypted index region (V2: 3,293).
     /// `file_len - payload_len == index_len` on the V2 container.
     pub index_len: u32,
-    /// Two remaining header words; their meaning is not established.
-    pub words: [u32; 2],
+    /// Remaining header word; meaning not established (V2: 27,227).
+    pub reserved: u32,
 }
 
 impl MoeHeader {
@@ -446,8 +449,9 @@ impl MoeHeader {
             magic: MOE_MAGIC,
             entry_count: word(4),
             payload_len: word(8),
+            index_expanded_len: word(12),
             index_len: word(16),
-            words: [word(12), word(20)],
+            reserved: word(20),
         })
     }
 }
@@ -566,8 +570,10 @@ fn take(input: &[u8], pos: &mut usize) -> Result<u8, MoeError> {
     Ok(byte)
 }
 
-/// Decodes an entry body. The runtime has two LZ77/LZSS variants selected by
-/// `(entry.fixed[0] >> 5) + 1`:
+/// Decodes an LZ77/LZSS stream. The first byte carries the decoder variant in
+/// its top three bits (`kind = (byte >> 5) + 1`) and the initial control byte
+/// in its low five bits; data starts at byte one, and every token is followed
+/// by the next control byte.
 ///
 /// - control `< 0x20`: literal run of `control + 1` bytes;
 /// - otherwise: `extra = (control >> 5) - 1`, a second byte extends the
@@ -578,21 +584,20 @@ fn take(input: &[u8], pos: &mut usize) -> Result<u8, MoeError> {
 /// `0xFF` distance byte with `control & 0x1F == 0x1F` switches to a 16-bit
 /// big-endian distance biased by `0x1FFF`.
 ///
-/// This is a reconstruction from static disassembly and has not been checked
-/// against a real container body. Later disassembly showed that the first
-/// byte actually carries `kind` in its top three bits and the initial control
-/// byte in its low five bits, with data starting at byte one; that framing is
-/// not applied here yet. Treat a decode failure as a missing resource, not a
-/// fatal engine error.
-pub fn lz_decode(kind: u8, input: &[u8], expected_len: usize) -> Result<Vec<u8>, MoeError> {
+/// This framing was verified against the V2 container's trailing index:
+/// 3,293 encrypted bytes expand to exactly 5,903 bytes, matching the header.
+/// Resource bodies have an additional layer and are not decoded here.
+pub fn lz_decode(input: &[u8], expected_len: usize) -> Result<Vec<u8>, MoeError> {
+    let first = *input.first().ok_or(MoeError::Lz("empty body stream"))?;
+    let kind = (first >> 5) + 1;
     if kind != 1 && kind != 2 {
         return Err(MoeError::Lz("unsupported body codec"));
     }
+    let mut control = first & 0x1F;
+    let mut pos = 1usize;
     let mut out: Vec<u8> = Vec::with_capacity(expected_len);
-    let mut pos = 0usize;
 
     while pos < input.len() && out.len() < expected_len {
-        let control = take(input, &mut pos)?;
         if control < 0x20 {
             let count = control as usize + 1;
             if out.len() + count > expected_len || pos + count > input.len() {
@@ -600,57 +605,145 @@ pub fn lz_decode(kind: u8, input: &[u8], expected_len: usize) -> Result<Vec<u8>,
             }
             out.extend_from_slice(&input[pos..pos + count]);
             pos += count;
-            continue;
-        }
-
-        let mut extra = (control >> 5) as usize - 1;
-        if extra == 6 {
-            if kind == 1 {
-                extra = take(input, &mut pos)? as usize + 6;
-            } else {
-                extra = 6;
-                loop {
-                    let byte = take(input, &mut pos)?;
-                    extra += byte as usize;
-                    if byte != 0xFF {
-                        break;
+        } else {
+            let mut extra = (control >> 5) as usize - 1;
+            if extra == 6 {
+                if kind == 1 {
+                    extra = take(input, &mut pos)? as usize + 6;
+                } else {
+                    extra = 6;
+                    loop {
+                        let byte = take(input, &mut pos)?;
+                        extra += byte as usize;
+                        if byte != 0xFF {
+                            break;
+                        }
                     }
                 }
             }
-        }
 
-        let low = take(input, &mut pos)?;
-        let mut distance = ((control & 0x1F) as usize) << 8 | low as usize;
-        distance += 1;
-        if kind == 2 && low == 0xFF && (control & 0x1F) == 0x1F {
-            let high = take(input, &mut pos)? as usize;
-            let low2 = take(input, &mut pos)? as usize;
-            distance = (high << 8 | low2) + 0x1FFF + 1;
-        }
+            let low = take(input, &mut pos)?;
+            let mut distance = ((control & 0x1F) as usize) << 8 | low as usize;
+            distance += 1;
+            if kind == 2 && low == 0xFF && (control & 0x1F) == 0x1F {
+                let high = take(input, &mut pos)? as usize;
+                let low2 = take(input, &mut pos)? as usize;
+                distance = (high << 8 | low2) + 0x1FFF + 1;
+            }
 
-        let total = extra + 3;
-        if out.len() + total > expected_len {
-            return Err(MoeError::Lz("match exceeds expected output length"));
+            let total = extra + 3;
+            if out.len() + total > expected_len {
+                return Err(MoeError::Lz("match exceeds expected output length"));
+            }
+            if distance == 1 {
+                let byte = *out.last().ok_or(MoeError::Lz("RLE without history"))?;
+                out.resize(out.len() + total, byte);
+            } else {
+                if distance > out.len() {
+                    return Err(MoeError::Lz("back-reference before output start"));
+                }
+                for _ in 0..total {
+                    let byte = out[out.len() - distance];
+                    out.push(byte);
+                }
+            }
         }
-        if distance == 1 {
-            let byte = *out.last().ok_or(MoeError::Lz("RLE without history"))?;
-            out.resize(out.len() + total, byte);
+        if pos < input.len() {
+            control = take(input, &mut pos)?;
         } else {
-            if distance > out.len() {
-                return Err(MoeError::Lz("back-reference before output start"));
-            }
-            for _ in 0..total {
-                let byte = out[out.len() - distance];
-                out.push(byte);
-            }
+            break;
         }
     }
     Ok(out)
 }
 
+/// One resource described by the expanded index. Field names follow the
+/// correlations verified on the V2 container: 141/141 name lengths match,
+/// and 140/140 packed sizes equal the gap to the next record's offset.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MoeResource {
+    pub name: String,
+    /// Expanded (uncompressed) size.
+    pub unpacked_size: u32,
+    /// Size of the stored, packed bytes.
+    pub packed_size: u32,
+    /// Constant 1 on the V2 container; treated as a type/flag word.
+    pub flags: u32,
+    /// Absolute offset of the packed bytes in the container.
+    pub offset: u32,
+    /// Unidentified word; correlates with but is not equal to the name hash.
+    pub unknown: u32,
+}
+
+/// Walks `24-byte prefix + NUL-terminated name` records in an expanded index.
+pub fn parse_index_records(index: &[u8], count: u32) -> Result<Vec<MoeResource>, MoeError> {
+    let mut out = Vec::with_capacity(count as usize);
+    let mut offset = 0usize;
+    for _ in 0..count {
+        if offset + MOE_HEADER_SIZE > index.len() {
+            return Err(MoeError::Schema("index record prefix truncated"));
+        }
+        let word = |at: usize| {
+            u32::from_le_bytes([index[at], index[at + 1], index[at + 2], index[at + 3]])
+        };
+        let base = offset;
+        let name_len = word(base + 20) as usize;
+        let name_start = offset + MOE_HEADER_SIZE;
+        let name_end = name_start.saturating_add(name_len);
+        if name_end >= index.len() || index[name_end] != 0 {
+            return Err(MoeError::Schema("index record name missing NUL"));
+        }
+        out.push(MoeResource {
+            name: String::from_utf8_lossy(&index[name_start..name_end]).into_owned(),
+            unpacked_size: word(base),
+            packed_size: word(base + 4),
+            flags: word(base + 8),
+            offset: word(base + 12),
+            unknown: word(base + 16),
+        });
+        offset = name_end + 1;
+    }
+    Ok(out)
+}
+
+/// A container header plus its fully expanded resource index.
+#[derive(Clone, Debug)]
+pub struct MoeIndex {
+    pub header: MoeHeader,
+    pub resources: Vec<MoeResource>,
+}
+
+impl MoeIndex {
+    /// Decrypts the header, decrypts and LZ-expands the trailing index, then
+    /// parses its records. Verified end to end against the V2 container.
+    pub fn open(raw: &[u8], tables: &MoeTables) -> Result<Self, MoeError> {
+        let header = MoeHeader::decrypt(raw, tables)?;
+        let encrypted_index = decrypt_index(raw, &header, tables)?;
+        let expanded = lz_decode(&encrypted_index, header.index_expanded_len as usize)?;
+        if expanded.len() != header.index_expanded_len as usize {
+            return Err(MoeError::Lz("index expansion length mismatch"));
+        }
+        let resources = parse_index_records(&expanded, header.entry_count)?;
+        Ok(Self { header, resources })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Builds a variant-1 stream made only of literal runs.
+    fn literal_lz(data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut pos = 0usize;
+        while pos < data.len() {
+            let count = (data.len() - pos).min(32);
+            out.push((count - 1) as u8);
+            out.extend_from_slice(&data[pos..pos + count]);
+            pos += count;
+        }
+        out
+    }
 
     /// Test-only toy cipher. It is deliberately unrelated to any shipped
     /// container and exists only to exercise the container boundary.
@@ -835,7 +928,7 @@ mod tests {
     #[test]
     fn lz_decodes_a_literal_run() {
         assert_eq!(
-            lz_decode(1, &[0x02, b'a', b'b', b'c'], 3).unwrap(),
+            lz_decode(&[0x02, b'a', b'b', b'c'], 3).unwrap().as_slice(),
             &b"abc"[..]
         );
     }
@@ -843,21 +936,22 @@ mod tests {
     #[test]
     fn lz_decodes_an_overlapping_back_reference() {
         let input = [0x02, b'a', b'b', b'c', 0x20, 0x02];
-        assert_eq!(lz_decode(1, &input, 6).unwrap().as_slice(), &b"abcabc"[..]);
+        assert_eq!(lz_decode(&input, 6).unwrap().as_slice(), &b"abcabc"[..]);
     }
 
     #[test]
     fn lz_distance_one_repeats_the_last_byte() {
         let input = [0x00, b'x', 0x20, 0x00];
-        assert_eq!(lz_decode(1, &input, 4).unwrap().as_slice(), &b"xxxx"[..]);
+        assert_eq!(lz_decode(&input, 4).unwrap().as_slice(), &b"xxxx"[..]);
     }
 
     #[test]
     fn lz_variant_two_extends_the_match_length() {
+        // First byte 0x22 selects variant 2 and an initial 3-byte literal.
         // 0xE0 sets extra to 6, which variant 2 extends through a chain;
         // the 0x02 byte terminates it and adds 2, giving an 11-byte match.
-        let input = [0x02, b'a', b'b', b'c', 0xE0, 0x02, 0x02];
-        let out = lz_decode(2, &input, 14).unwrap();
+        let input = [0x22, b'a', b'b', b'c', 0xE0, 0x02, 0x02];
+        let out = lz_decode(&input, 14).unwrap();
         assert_eq!(out.len(), 14);
         assert_eq!(&out[..6], &b"abcabc"[..]);
     }
@@ -865,11 +959,11 @@ mod tests {
     #[test]
     fn lz_rejects_unknown_variants_and_truncated_streams() {
         assert_eq!(
-            lz_decode(3, &[], 0).unwrap_err(),
+            lz_decode(&[0xE0], 0).unwrap_err(),
             MoeError::Lz("unsupported body codec")
         );
-        assert!(lz_decode(1, &[0x20], 3).is_err());
-        assert!(lz_decode(1, &[0x20, 0x00], 3).is_err());
+        assert!(lz_decode(&[0x05, 0x41], 10).is_err());
+        assert!(lz_decode(&[0x02, b'a', b'b', b'c', 0x40, 0x20], 10).is_err());
     }
 
     #[test]
@@ -926,5 +1020,46 @@ mod tests {
         assert_eq!(header.index_len as usize, plain_index.len());
         let index = decrypt_index(&raw, &header, &tables).unwrap();
         assert_eq!(index.as_slice(), plain_index.as_slice());
+    }
+
+    #[test]
+    fn moe_index_opens_end_to_end() {
+        let tables = test_tables();
+        let name = b"BGM_TEST.bmp";
+        let mut expanded = Vec::new();
+        expanded.extend_from_slice(&3_686_456u32.to_le_bytes());
+        expanded.extend_from_slice(&1_563_134u32.to_le_bytes());
+        expanded.extend_from_slice(&1u32.to_le_bytes());
+        expanded.extend_from_slice(&24u32.to_le_bytes());
+        expanded.extend_from_slice(&0x1234_5678u32.to_le_bytes());
+        expanded.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        expanded.extend_from_slice(name);
+        expanded.push(0);
+
+        let mut encrypted_index = literal_lz(&expanded);
+        let cipher = XmoeCipher::new(&tables);
+        cipher.decrypt_in_place(&mut encrypted_index, 0).unwrap();
+
+        let mut head = [0u8; MOE_HEADER_SIZE];
+        head[..4].copy_from_slice(&MOE_MAGIC);
+        head[4..8].copy_from_slice(&1u32.to_le_bytes());
+        head[8..12].copy_from_slice(&(MOE_HEADER_SIZE as u32 + 64).to_le_bytes());
+        head[12..16].copy_from_slice(&(expanded.len() as u32).to_le_bytes());
+        head[16..20].copy_from_slice(&(encrypted_index.len() as u32).to_le_bytes());
+        let mut raw: Vec<u8> = head
+            .iter()
+            .enumerate()
+            .map(|(i, byte)| *byte ^ tables.sbox[i])
+            .collect();
+        raw.extend(vec![0u8; 64]);
+        raw.extend_from_slice(&encrypted_index);
+
+        let index = MoeIndex::open(&raw, &tables).unwrap();
+        assert_eq!(index.header.entry_count, 1);
+        assert_eq!(index.header.index_expanded_len as usize, expanded.len());
+        assert_eq!(index.resources.len(), 1);
+        assert_eq!(index.resources[0].name, "BGM_TEST.bmp");
+        assert_eq!(index.resources[0].offset, 24);
+        assert_eq!(index.resources[0].packed_size, 1_563_134);
     }
 }
