@@ -24,7 +24,8 @@ pub use key::{make_pac_key, normalize_pal_name_bytes, PacKey};
 pub use moe::{
     lz_decode, name_hash, probe, read_entry, MoeArchive, MoeCipher, MoeEntry, MoeError, MoeHeader,
     MoeLayout, MoeProbe, MoeRecord, MoeSchema, MoeTables, MoeTextTable, XmoeCipher,
-    MOE_BLOCK_SIZE, MOE_HEADER_SIZE, MOE_MAGIC, MOE_TEXT_CODEPAGE,
+    MOE_BLOCK_SIZE, MOE_HEADER_SIZE, MOE_MAGIC, MOE_TABLE_MAGIC, MOE_TABLE_VERSION,
+    MOE_TEXT_CODEPAGE,
 };
 pub use nls::Nls;
 pub use pac::{PacArchive, PacBucket, PacEntry};

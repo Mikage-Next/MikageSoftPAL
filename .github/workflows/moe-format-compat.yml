@@ -20,6 +20,9 @@ jobs:
       - name: sena-mobile library compiles
         run: cargo check -p sena-mobile --lib
 
+      - name: pal-vm desktop shell compiles
+        run: cargo check -p pal-vm
+
       - name: patch detection unit tests
         run: cargo test -p sena-mobile --lib patch::tests
         continue-on-error: true

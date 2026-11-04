@@ -32,6 +32,8 @@ pub enum MoeError {
     Schema(&'static str),
     /// The LZ body stream is malformed or uses an unsupported variant.
     Lz(&'static str),
+    /// A table file is missing, truncated, or fails its integrity check.
+    Table(&'static str),
 }
 
 /// Supplied by the host. Implementations own any key material; this crate
@@ -283,6 +285,10 @@ pub const MOE_MAGIC: [u8; 4] = *b"XMOE";
 pub const MOE_HEADER_SIZE: usize = 24;
 /// Code page used by the runtime's text path.
 pub const MOE_TEXT_CODEPAGE: u16 = 936;
+/// Magic of a standalone table file exported by the user.
+pub const MOE_TABLE_MAGIC: [u8; 8] = *b"XMOETBL\0";
+pub const MOE_TABLE_VERSION: u32 = 1;
+const MOE_TABLE_HEADER_LEN: usize = 8 + 5 * 4;
 
 /// The three constant tables of the container cipher. A host supplies these
 /// from its own copy of the patch; this crate intentionally ships no table
@@ -309,6 +315,99 @@ impl MoeTables {
             return Err(MoeError::Schema("no key dwords"));
         }
         Ok(())
+    }
+
+    fn checksum(&self) -> u32 {
+        let mut sum = 0u32;
+        for byte in self.sbox.iter().chain(self.nibble.iter()) {
+            sum = sum.wrapping_add(*byte as u32);
+        }
+        for key in &self.keys {
+            for byte in key.to_le_bytes() {
+                sum = sum.wrapping_add(byte as u32);
+            }
+        }
+        sum
+    }
+
+    /// Serialises the tables into the standalone file format. The file holds
+    /// algorithm constants only; the caller decides where to keep it.
+    pub fn encode(&self) -> Result<Vec<u8>, MoeError> {
+        self.validate()?;
+        let capacity = MOE_TABLE_HEADER_LEN
+            .saturating_add(self.sbox.len())
+            .saturating_add(self.nibble.len())
+            .saturating_add(self.keys.len().saturating_mul(4));
+        let mut out = Vec::with_capacity(capacity);
+        out.extend_from_slice(&MOE_TABLE_MAGIC);
+        out.extend_from_slice(&MOE_TABLE_VERSION.to_le_bytes());
+        out.extend_from_slice(&(self.sbox.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(self.nibble.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(self.keys.len() as u32).to_le_bytes());
+        out.extend_from_slice(&self.checksum().to_le_bytes());
+        out.extend_from_slice(&self.sbox);
+        out.extend_from_slice(&self.nibble);
+        for key in &self.keys {
+            out.extend_from_slice(&key.to_le_bytes());
+        }
+        Ok(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, MoeError> {
+        if bytes.len() < MOE_TABLE_HEADER_LEN {
+            return Err(MoeError::Table("truncated table header"));
+        }
+        if bytes[..8] != MOE_TABLE_MAGIC[..] {
+            return Err(MoeError::Table("bad table magic"));
+        }
+        let word = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        if word(8) != MOE_TABLE_VERSION {
+            return Err(MoeError::Table("unsupported table version"));
+        }
+        let sbox_len = word(12) as usize;
+        let nibble_len = word(16) as usize;
+        let key_count = word(20) as usize;
+        let checksum = word(24);
+        let expected = MOE_TABLE_HEADER_LEN
+            .saturating_add(sbox_len)
+            .saturating_add(nibble_len)
+            .saturating_add(key_count.saturating_mul(4));
+        if bytes.len() != expected {
+            return Err(MoeError::Table("table length mismatch"));
+        }
+        let mut pos = MOE_TABLE_HEADER_LEN;
+        let sbox = bytes[pos..pos + sbox_len].to_vec();
+        pos += sbox_len;
+        let nibble = bytes[pos..pos + nibble_len].to_vec();
+        pos += nibble_len;
+        let mut keys = Vec::with_capacity(key_count);
+        for _ in 0..key_count {
+            keys.push(u32::from_le_bytes([
+                bytes[pos],
+                bytes[pos + 1],
+                bytes[pos + 2],
+                bytes[pos + 3],
+            ]));
+            pos += 4;
+        }
+        let tables = Self { sbox, nibble, keys };
+        tables.validate()?;
+        if tables.checksum() != checksum {
+            return Err(MoeError::Table("table checksum mismatch"));
+        }
+        Ok(tables)
+    }
+
+    pub fn read(path: &std::path::Path) -> Result<Self, MoeError> {
+        let bytes = std::fs::read(path).map_err(|_| MoeError::Table("cannot read table file"))?;
+        Self::decode(&bytes)
+    }
+
+    pub fn write(&self, path: &std::path::Path) -> Result<(), MoeError> {
+        std::fs::write(path, self.encode()?)
+            .map_err(|_| MoeError::Table("cannot write table file"))
     }
 }
 
@@ -743,5 +842,37 @@ mod tests {
         );
         assert!(lz_decode(1, &[0x20], 3).is_err());
         assert!(lz_decode(1, &[0x20, 0x00], 3).is_err());
+    }
+
+    #[test]
+    fn table_file_round_trips() {
+        let tables = test_tables();
+        let bytes = tables.encode().unwrap();
+        assert_eq!(&bytes[..8], &MOE_TABLE_MAGIC[..]);
+        let decoded = MoeTables::decode(&bytes).unwrap();
+        assert_eq!(decoded.sbox, tables.sbox);
+        assert_eq!(decoded.nibble, tables.nibble);
+        assert_eq!(decoded.keys, tables.keys);
+    }
+
+    #[test]
+    fn table_file_rejects_corruption_and_short_input() {
+        let bytes = test_tables().encode().unwrap();
+        assert_eq!(
+            MoeTables::decode(b"short").unwrap_err(),
+            MoeError::Table("truncated table header")
+        );
+        let mut bad_magic = bytes.clone();
+        bad_magic[0] ^= 1;
+        assert_eq!(
+            MoeTables::decode(&bad_magic).unwrap_err(),
+            MoeError::Table("bad table magic")
+        );
+        let mut bad_sum = bytes.clone();
+        bad_sum[MOE_TABLE_HEADER_LEN + 3] ^= 1;
+        assert_eq!(
+            MoeTables::decode(&bad_sum).unwrap_err(),
+            MoeError::Table("table checksum mismatch")
+        );
     }
 }

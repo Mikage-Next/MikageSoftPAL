@@ -890,6 +890,7 @@ pub(crate) fn build_engine(config: &SenaConfig) -> anyhow::Result<Engine> {
             actions: config.trace_actions,
         },
         patch: None,
+        text_table: None,
     })
 }
 

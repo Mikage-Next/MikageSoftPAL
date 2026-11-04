@@ -45,6 +45,9 @@ pub struct EngineConfig {
     pub trace: TraceConfig,
     /// A translation patch's loose files and text code map.
     pub patch: Option<pal_asset::GamePatch>,
+    /// Optional lookup applied to ADV body and name strings. Keys are the
+    /// resolved source-language strings; a miss leaves the original text.
+    pub text_table: Option<pal_asset::MoeTextTable>,
 }
 
 impl Default for EngineConfig {
@@ -58,6 +61,7 @@ impl Default for EngineConfig {
             audio: AudioConfig::default(),
             trace: TraceConfig::default(),
             patch: None,
+            text_table: None,
         }
     }
 }
@@ -155,6 +159,9 @@ impl Engine {
                         core_assets.text_dat_multilingual,
                     );
                     runtime.set_text_lang(config.lang);
+                    if let Some(table) = config.text_table.clone() {
+                        runtime.set_text_table(table);
+                    }
                     if let Some(system_ini) = startup_config.system_ini.clone() {
                         runtime.set_system_ini(system_ini);
                     }

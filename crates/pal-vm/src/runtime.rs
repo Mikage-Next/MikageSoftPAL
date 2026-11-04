@@ -6,7 +6,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pal_asset::{AssetSource, LoadedAsset, Nls, ResourceManager};
+use pal_asset::{AssetSource, LoadedAsset, MoeTextTable, Nls, ResourceManager};
 use pal_script::extsig::{lookup_registered_sig, lookup_sig, observed_pop_count};
 use pal_script::opcodes::{ext_opcode, primary_opcode};
 use pal_script::{Operand, OperandKind, PointTable, ScriptImage};
@@ -337,6 +337,8 @@ pub struct ScriptRuntime {
     call_stack: Vec<u32>,
     status: RuntimeStatus,
     trace: bool,
+    /// Optional translation lookup for ADV body and name strings.
+    text_table: Option<MoeTextTable>,
     /// Handle to the active blocking wait task created for WaitFrame/WaitClick opcodes.
     /// Engine checks this handle after task_system.process() to detect task completion.
     wait_task_handle: Option<TaskHandle>,
@@ -1442,6 +1444,7 @@ impl ScriptRuntime {
             call_stack: Vec::new(),
             status: RuntimeStatus::Running { pc: entry_pc },
             trace: config.trace,
+            text_table: None,
             wait_task_handle: None,
             wait_task_kind: None,
             adv_wait_checkpoint_pending: false,
@@ -1585,6 +1588,12 @@ impl ScriptRuntime {
             system_scratch_value: 0,
             debug_window_state: 0,
         }
+    }
+
+    /// Install a translation table applied to ADV body and name strings.
+    /// Keys are resolved source-language strings, so a miss is harmless.
+    pub fn set_text_table(&mut self, table: MoeTextTable) {
+        self.text_table = Some(table);
     }
 
     /// Select which field of a multi-language text record is displayed.
@@ -3120,7 +3129,17 @@ impl ScriptRuntime {
         let name = self
             .resolved_dialog_text_arg(self.text_name_value(), assets, nls)
             .unwrap_or_default();
-        (body, name)
+        let translate = |text: String| -> String {
+            let translated = self
+                .text_table
+                .as_ref()
+                .and_then(|table| table.lookup(&text));
+            match translated {
+                Some(value) => value.to_owned(),
+                None => text,
+            }
+        };
+        (translate(body), translate(name))
     }
 
     fn text_body_value(&self) -> i32 {
