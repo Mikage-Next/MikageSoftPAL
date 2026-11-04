@@ -21,7 +21,7 @@ jobs:
         run: cargo check -p sena-mobile --lib
 
       - name: pal-vm desktop shell compiles
-        run: cargo check -p pal-vm
+        run: cargo check -p pal-vm --no-default-features --features desktop
 
       - name: patch detection unit tests
         run: cargo test -p sena-mobile --lib patch::tests
