@@ -22,7 +22,8 @@ pub use decrypt::{decrypt_dollar_payload, decrypt_pal_dollar_file};
 pub use error::{AssetError, Result};
 pub use key::{make_pac_key, normalize_pal_name_bytes, PacKey};
 pub use moe::{
-    lz_decode, name_hash, probe, read_entry, MoeArchive, MoeCipher, MoeEntry, MoeError, MoeHeader,
+    decrypt_index, lz_decode, name_hash, probe, read_entry, MoeArchive, MoeCipher, MoeEntry,
+    MoeError, MoeHeader,
     MoeLayout, MoeProbe, MoeRecord, MoeSchema, MoeTables, MoeTextTable, XmoeCipher,
     MOE_BLOCK_SIZE, MOE_HEADER_SIZE, MOE_MAGIC, MOE_TABLE_MAGIC, MOE_TABLE_VERSION,
     MOE_TEXT_CODEPAGE,

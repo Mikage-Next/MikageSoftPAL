@@ -419,7 +419,11 @@ pub struct MoeHeader {
     pub magic: [u8; 4],
     pub entry_count: u32,
     pub payload_len: u32,
-    pub words: [u32; 3],
+    /// Length of the trailing encrypted index region. Confirmed by
+    /// `file_len - payload_len == index_len` on the V2 container.
+    pub index_len: u32,
+    /// Two remaining header words; their meaning is not established.
+    pub words: [u32; 2],
 }
 
 impl MoeHeader {
@@ -442,9 +446,30 @@ impl MoeHeader {
             magic: MOE_MAGIC,
             entry_count: word(4),
             payload_len: word(8),
-            words: [word(12), word(16), word(20)],
+            index_len: word(16),
+            words: [word(12), word(20)],
         })
     }
+}
+
+/// Decrypts the trailing index region. Verified against the V2 container:
+/// its key stream starts at index zero, independent of the region's absolute
+/// file offset, and yields structural data (NUL-terminated resource names and
+/// zero-filled records) rather than high-entropy ciphertext.
+pub fn decrypt_index(
+    raw: &[u8],
+    header: &MoeHeader,
+    tables: &MoeTables,
+) -> Result<Vec<u8>, MoeError> {
+    let len = header.index_len as usize;
+    if len == 0 || len > raw.len() {
+        return Err(MoeError::Schema("index length out of range"));
+    }
+    let start = raw.len() - len;
+    let mut index = raw[start..].to_vec();
+    let cipher = XmoeCipher::new(tables);
+    cipher.decrypt_in_place(&mut index, 0)?;
+    Ok(index)
 }
 
 /// Cipher for the block-aligned index region. The runtime refreshes its key
@@ -553,9 +578,12 @@ fn take(input: &[u8], pos: &mut usize) -> Result<u8, MoeError> {
 /// `0xFF` distance byte with `control & 0x1F == 0x1F` switches to a 16-bit
 /// big-endian distance biased by `0x1FFF`.
 ///
-/// This is a reconstruction from static disassembly. It has not been checked
-/// against a real container body, so callers should treat a decode failure as
-/// a missing resource rather than a fatal engine error.
+/// This is a reconstruction from static disassembly and has not been checked
+/// against a real container body. Later disassembly showed that the first
+/// byte actually carries `kind` in its top three bits and the initial control
+/// byte in its low five bits, with data starting at byte one; that framing is
+/// not applied here yet. Treat a decode failure as a missing resource, not a
+/// fatal engine error.
 pub fn lz_decode(kind: u8, input: &[u8], expected_len: usize) -> Result<Vec<u8>, MoeError> {
     if kind != 1 && kind != 2 {
         return Err(MoeError::Lz("unsupported body codec"));
@@ -874,5 +902,29 @@ mod tests {
             MoeTables::decode(&bad_sum).unwrap_err(),
             MoeError::Table("table checksum mismatch")
         );
+    }
+
+    #[test]
+    fn trailing_index_decrypts_from_its_own_stream_start() {
+        let tables = test_tables();
+        let cipher = XmoeCipher::new(&tables);
+        let plain_index = b"name_one\0name_two\0".to_vec();
+        let mut encrypted = plain_index.clone();
+        cipher.decrypt_in_place(&mut encrypted, 0).unwrap();
+        let mut head = [0u8; MOE_HEADER_SIZE];
+        head[..4].copy_from_slice(&MOE_MAGIC);
+        head[4..8].copy_from_slice(&2u32.to_le_bytes());
+        head[16..20].copy_from_slice(&(encrypted.len() as u32).to_le_bytes());
+        let mut raw: Vec<u8> = head
+            .iter()
+            .enumerate()
+            .map(|(i, byte)| *byte ^ tables.sbox[i])
+            .collect();
+        raw.extend(vec![0u8; 64]);
+        raw.extend_from_slice(&encrypted);
+        let header = MoeHeader::decrypt(&raw, &tables).unwrap();
+        assert_eq!(header.index_len as usize, plain_index.len());
+        let index = decrypt_index(&raw, &header, &tables).unwrap();
+        assert_eq!(index.as_slice(), plain_index.as_slice());
     }
 }
