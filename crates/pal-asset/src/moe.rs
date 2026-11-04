@@ -30,6 +30,8 @@ pub enum MoeError {
     Cipher(&'static str),
     /// The schema does not fit the decrypted payload.
     Schema(&'static str),
+    /// The LZ body stream is malformed or uses an unsupported variant.
+    Lz(&'static str),
 }
 
 /// Supplied by the host. Implementations own any key material; this crate
@@ -434,6 +436,91 @@ pub fn name_hash(name: &[u8]) -> u32 {
     hash
 }
 
+fn take(input: &[u8], pos: &mut usize) -> Result<u8, MoeError> {
+    let byte = *input.get(*pos).ok_or(MoeError::Lz("truncated body stream"))?;
+    *pos += 1;
+    Ok(byte)
+}
+
+/// Decodes an entry body. The runtime has two LZ77/LZSS variants selected by
+/// `(entry.fixed[0] >> 5) + 1`:
+///
+/// - control `< 0x20`: literal run of `control + 1` bytes;
+/// - otherwise: `extra = (control >> 5) - 1`, a second byte extends the
+///   back-reference distance, and the match length is `extra + 3`. A distance
+///   of one repeats the last output byte (RLE).
+///
+/// Variant 2 extends `extra == 6` through a `0xFF` terminator chain, and a
+/// `0xFF` distance byte with `control & 0x1F == 0x1F` switches to a 16-bit
+/// big-endian distance biased by `0x1FFF`.
+///
+/// This is a reconstruction from static disassembly. It has not been checked
+/// against a real container body, so callers should treat a decode failure as
+/// a missing resource rather than a fatal engine error.
+pub fn lz_decode(kind: u8, input: &[u8], expected_len: usize) -> Result<Vec<u8>, MoeError> {
+    if kind != 1 && kind != 2 {
+        return Err(MoeError::Lz("unsupported body codec"));
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(expected_len);
+    let mut pos = 0usize;
+
+    while pos < input.len() && out.len() < expected_len {
+        let control = take(input, &mut pos)?;
+        if control < 0x20 {
+            let count = control as usize + 1;
+            if out.len() + count > expected_len || pos + count > input.len() {
+                return Err(MoeError::Lz("literal run exceeds output or input"));
+            }
+            out.extend_from_slice(&input[pos..pos + count]);
+            pos += count;
+            continue;
+        }
+
+        let mut extra = (control >> 5) as usize - 1;
+        if extra == 6 {
+            if kind == 1 {
+                extra = take(input, &mut pos)? as usize + 6;
+            } else {
+                extra = 6;
+                loop {
+                    let byte = take(input, &mut pos)?;
+                    extra += byte as usize;
+                    if byte != 0xFF {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let low = take(input, &mut pos)?;
+        let mut distance = ((control & 0x1F) as usize) << 8 | low as usize;
+        distance += 1;
+        if kind == 2 && low == 0xFF && (control & 0x1F) == 0x1F {
+            let high = take(input, &mut pos)? as usize;
+            let low2 = take(input, &mut pos)? as usize;
+            distance = (high << 8 | low2) + 0x1FFF + 1;
+        }
+
+        let total = extra + 3;
+        if out.len() + total > expected_len {
+            return Err(MoeError::Lz("match exceeds expected output length"));
+        }
+        if distance == 1 {
+            let byte = *out.last().ok_or(MoeError::Lz("RLE without history"))?;
+            out.resize(out.len() + total, byte);
+        } else {
+            if distance > out.len() {
+                return Err(MoeError::Lz("back-reference before output start"));
+            }
+            for _ in 0..total {
+                let byte = out[out.len() - distance];
+                out.push(byte);
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,5 +703,45 @@ mod tests {
     fn name_hash_matches_pjw() {
         assert_eq!(name_hash(b""), 0);
         assert_eq!(name_hash(b"a"), 97);
+    }
+
+    #[test]
+    fn lz_decodes_a_literal_run() {
+        assert_eq!(
+            lz_decode(1, &[0x02, b'a', b'b', b'c'], 3).unwrap(),
+            &b"abc"[..]
+        );
+    }
+
+    #[test]
+    fn lz_decodes_an_overlapping_back_reference() {
+        let input = [0x02, b'a', b'b', b'c', 0x20, 0x02];
+        assert_eq!(lz_decode(1, &input, 6).unwrap().as_slice(), &b"abcabc"[..]);
+    }
+
+    #[test]
+    fn lz_distance_one_repeats_the_last_byte() {
+        let input = [0x00, b'x', 0x20, 0x00];
+        assert_eq!(lz_decode(1, &input, 4).unwrap().as_slice(), &b"xxxx"[..]);
+    }
+
+    #[test]
+    fn lz_variant_two_extends_the_match_length() {
+        // 0xE0 sets extra to 6, which variant 2 extends through a chain;
+        // the 0x02 byte terminates it and adds 2, giving an 11-byte match.
+        let input = [0x02, b'a', b'b', b'c', 0xE0, 0x02, 0x02];
+        let out = lz_decode(2, &input, 14).unwrap();
+        assert_eq!(out.len(), 14);
+        assert_eq!(&out[..6], &b"abcabc"[..]);
+    }
+
+    #[test]
+    fn lz_rejects_unknown_variants_and_truncated_streams() {
+        assert_eq!(
+            lz_decode(3, &[], 0).unwrap_err(),
+            MoeError::Lz("unsupported body codec")
+        );
+        assert!(lz_decode(1, &[0x20], 3).is_err());
+        assert!(lz_decode(1, &[0x20, 0x00], 3).is_err());
     }
 }
