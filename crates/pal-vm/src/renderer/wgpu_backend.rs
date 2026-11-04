@@ -281,8 +281,15 @@ impl WgpuBackend {
             })
             .await
             .map_err(|err| anyhow::anyhow!("no compatible GPU adapter: {err}"))?;
+        // wgpu's default limits can ask for more than an iOS Metal device
+        // offers (for example 16 inter-stage shader variables against 15), so
+        // cap them at what the adapter reports.
+        let required_limits = wgpu::Limits::default().or_worse_values_from(&adapter.limits());
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor {
+                required_limits,
+                ..Default::default()
+            })
             .await
             .map_err(|err| anyhow::anyhow!("GPU device request failed: {err}"))?;
         let capabilities = surface.get_capabilities(&adapter);
