@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use pal_asset::{GamePatch, Nls};
+use pal_asset::{GamePatch, MoeTables, Nls};
 
 use crate::log;
 
@@ -16,6 +16,10 @@ pub struct Found {
     /// An encrypted `.moe` container beside the game. Only registered here:
     /// the host must supply a `MoeCipher` before it can be read.
     pub moe_container: Option<PathBuf>,
+    /// Algorithm tables exported by the user into `moe-tables.bin`. Absent
+    /// when the file is missing or fails validation; the runtime never ships
+    /// these bytes itself.
+    pub moe_tables: Option<MoeTables>,
 }
 
 /// Reads the translation patch in the game folder, if there is one the
@@ -48,12 +52,25 @@ fn detect_xmoe(root: &Path) -> Found {
     if find_dir(root, "movie").is_some() {
         overlay_dirs.push("movie".to_owned());
     }
+    let moe_tables = find_file(root, "moe-tables.bin").and_then(|path| {
+        match MoeTables::read(&path) {
+            Ok(tables) => Some(tables),
+            Err(err) => {
+                log::emit(
+                    log::WARN,
+                    &format!("moe tables at {} are unusable: {err:?}", path.display()),
+                );
+                None
+            }
+        }
+    });
     log::emit(
         log::INFO,
         &format!(
-            "moe patch: container {}, overlays {:?}; decryption needs a host cipher",
+            "moe patch: container {}, overlays {:?}, host tables {}",
             container.display(),
-            overlay_dirs
+            overlay_dirs,
+            if moe_tables.is_some() { "loaded" } else { "absent" }
         ),
     );
     Found {
@@ -63,6 +80,7 @@ fn detect_xmoe(root: &Path) -> Found {
             text_code_map: None,
         }),
         moe_container: Some(container),
+        moe_tables,
     }
 }
 
@@ -147,6 +165,7 @@ fn read_longinus(root: &Path, ini: &Path) -> Option<Found> {
             text_code_map,
         }),
         moe_container: None,
+        moe_tables: None,
     })
 }
 
@@ -244,12 +263,50 @@ mod tests {
         let patch = found.patch.unwrap();
         assert_eq!(patch.overlay_dirs, vec!["movie".to_owned()]);
         assert!(patch.text_code_map.is_none());
+        assert!(found.moe_tables.is_none());
         assert_eq!(
             found
                 .moe_container
                 .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
             Some("Sena.moe".to_owned())
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn loads_host_supplied_moe_tables() {
+        let root = std::env::temp_dir()
+            .join(format!("sena-mobile-moe-tables-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Sena.moe"), [0u8; 32]).unwrap();
+        std::fs::write(root.join("XmoeCompiler.dll"), b"").unwrap();
+        let tables = MoeTables {
+            sbox: (0..=255u8).collect(),
+            nibble: (0..16u8).collect(),
+            keys: vec![0x1122_3344, 0x5566_7788],
+        };
+        std::fs::write(root.join("moe-tables.bin"), tables.encode().unwrap()).unwrap();
+        let found = detect(&root);
+        let loaded = found.moe_tables.expect("host table file should load");
+        assert_eq!(loaded.sbox.len(), 256);
+        assert_eq!(loaded.nibble.len(), 16);
+        assert_eq!(loaded.keys, tables.keys);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ignores_a_corrupt_moe_tables_file() {
+        let root = std::env::temp_dir()
+            .join(format!("sena-mobile-moe-badtables-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Sena.moe"), [0u8; 32]).unwrap();
+        std::fs::write(root.join("XmoeCompiler.dll"), b"").unwrap();
+        std::fs::write(root.join("moe-tables.bin"), b"not a table").unwrap();
+        let found = detect(&root);
+        assert!(found.moe_tables.is_none());
+        assert!(found.moe_container.is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

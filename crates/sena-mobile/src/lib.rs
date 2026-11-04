@@ -219,6 +219,28 @@ pub unsafe extern "C" fn sena_mobile_open(config: *const SenaMobileConfig) -> *m
                 ),
             );
         }
+        // When the host supplied algorithm tables, verify the container's
+        // index can actually be decoded. Only structural metadata is logged.
+        if let (Some(container), Some(tables)) = (&found.moe_container, &found.moe_tables) {
+            match std::fs::read(container) {
+                Ok(raw) => match pal_asset::MoeIndex::open(&raw, tables) {
+                    Ok(index) => log::emit(
+                        log::INFO,
+                        &format!(
+                            "moe index decoded: {} resources, {} index bytes",
+                            index.resources.len(),
+                            index.header.index_expanded_len
+                        ),
+                    ),
+                    Err(err) => {
+                        log::emit(log::WARN, &format!("moe index rejected: {err:?}"))
+                    }
+                },
+                Err(err) => {
+                    log::emit(log::WARN, &format!("moe container unreadable: {err}"))
+                }
+            }
+        }
         let nls = match config.encoding {
             ENCODING_SHIFT_JIS => Nls::ShiftJis,
             ENCODING_GBK => Nls::Gbk,
