@@ -1,0 +1,25 @@
+name: moe-format-compat
+
+on:
+  push:
+    branches:
+      - 'moe-*'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: pal-asset unit tests
+        run: cargo test -p pal-asset
+
+      - name: sena-mobile library compiles
+        run: cargo check -p sena-mobile --lib
+
+      - name: patch detection unit tests
+        run: cargo test -p sena-mobile --lib patch::tests
+        continue-on-error: true

@@ -11,6 +11,7 @@ mod archive_dat;
 mod decrypt;
 mod error;
 mod key;
+mod moe;
 mod nls;
 mod pac;
 mod resource;
@@ -20,6 +21,11 @@ pub use archive_dat::{parse_archive_dat_paths, parse_archive_dat_profile};
 pub use decrypt::{decrypt_dollar_payload, decrypt_pal_dollar_file};
 pub use error::{AssetError, Result};
 pub use key::{make_pac_key, normalize_pal_name_bytes, PacKey};
+pub use moe::{
+    name_hash, probe, read_entry, MoeArchive, MoeCipher, MoeEntry, MoeError, MoeHeader,
+    MoeLayout, MoeProbe, MoeRecord, MoeSchema, MoeTables, MoeTextTable, XmoeCipher,
+    MOE_BLOCK_SIZE, MOE_HEADER_SIZE, MOE_MAGIC, MOE_TEXT_CODEPAGE,
+};
 pub use nls::Nls;
 pub use pac::{PacArchive, PacBucket, PacEntry};
 pub use resource::{map_text_list_codes, AssetSource, GamePatch, LoadedAsset, ResourceManager};

@@ -13,6 +13,9 @@ pub struct Found {
     pub nls: Option<Nls>,
     /// The patch's files and text code map.
     pub patch: Option<GamePatch>,
+    /// An encrypted `.moe` container beside the game. Only registered here:
+    /// the host must supply a `MoeCipher` before it can be read.
+    pub moe_container: Option<PathBuf>,
 }
 
 /// Reads the translation patch in the game folder, if there is one the
@@ -24,7 +27,53 @@ pub fn detect(root: &Path) -> Found {
             None => log::emit(log::WARN, "Longinus.ini redirects no folder; the patch is ignored"),
         }
     }
-    Found::default()
+    detect_xmoe(root)
+}
+
+/// A `.moe` container with the patch's compiler or launcher beside it is an
+/// encrypted translation patch. Its SYSTEM.INI is GBK, and its loose files
+/// (notably the subtitled opening movie) shadow the archives. The container
+/// is only registered: this crate ships neither a cipher nor a key, and the
+/// host decides whether it is entitled to decrypt it.
+fn detect_xmoe(root: &Path) -> Found {
+    let Some(container) = find_moe_container(root) else {
+        return Found::default();
+    };
+    let has_runtime = find_file(root, "XmoeCompiler.dll").is_some()
+        || find_file(root, "Koikake_chs.exe").is_some();
+    if !has_runtime {
+        return Found::default();
+    }
+    let mut overlay_dirs = Vec::new();
+    if find_dir(root, "movie").is_some() {
+        overlay_dirs.push("movie".to_owned());
+    }
+    log::emit(
+        log::INFO,
+        &format!(
+            "moe patch: container {}, overlays {:?}; decryption needs a host cipher",
+            container.display(),
+            overlay_dirs
+        ),
+    );
+    Found {
+        nls: Some(Nls::Gbk),
+        patch: Some(GamePatch {
+            overlay_dirs,
+            text_code_map: None,
+        }),
+        moe_container: Some(container),
+    }
+}
+
+fn find_moe_container(root: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(root).ok()?.flatten().find_map(|entry| {
+        let path = entry.path();
+        let is_moe = path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("moe"));
+        (path.is_file() && is_moe).then_some(path)
+    })
 }
 
 /// Longinus (爱丽丝后宫汉化组 and others) hooks the executable's Win32 calls
@@ -97,6 +146,7 @@ fn read_longinus(root: &Path, ini: &Path) -> Option<Found> {
             overlay_dirs,
             text_code_map,
         }),
+        moe_container: None,
     })
 }
 
@@ -178,6 +228,28 @@ mod tests {
         let patch = found.patch.unwrap();
         assert_eq!(patch.overlay_dirs, vec!["GAME_CHS".to_owned()]);
         assert_eq!(patch.text_code_map, Some(vec![0x20, 0xA1A1]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn detects_an_encrypted_moe_patch_without_decrypting_it() {
+        let root = std::env::temp_dir().join(format!("sena-mobile-moe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("movie")).unwrap();
+        std::fs::write(root.join("Sena.moe"), [0u8; 32]).unwrap();
+        std::fs::write(root.join("XmoeCompiler.dll"), b"").unwrap();
+        std::fs::write(root.join("movie/koikake.wmv"), b"").unwrap();
+        let found = detect(&root);
+        assert_eq!(found.nls, Some(Nls::Gbk));
+        let patch = found.patch.unwrap();
+        assert_eq!(patch.overlay_dirs, vec!["movie".to_owned()]);
+        assert!(patch.text_code_map.is_none());
+        assert_eq!(
+            found
+                .moe_container
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+            Some("Sena.moe".to_owned())
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

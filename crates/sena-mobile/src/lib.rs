@@ -210,6 +210,15 @@ pub unsafe extern "C" fn sena_mobile_open(config: *const SenaMobileConfig) -> *m
         }
         pal_vm::set_save_directory(save_dir);
         let found = patch::detect(&game_dir);
+        if let Some(container) = &found.moe_container {
+            log::emit(
+                log::INFO,
+                &format!(
+                    "encrypted translation container {} registered; no host cipher configured",
+                    container.display()
+                ),
+            );
+        }
         let nls = match config.encoding {
             ENCODING_SHIFT_JIS => Nls::ShiftJis,
             ENCODING_GBK => Nls::Gbk,
