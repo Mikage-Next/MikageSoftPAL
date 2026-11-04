@@ -99,6 +99,7 @@ fn assets_with_script(entry_pc: u32, script_body: Vec<u8>) -> CoreAssets {
         script_entry_pc: entry_pc,
         point_table: PointTable::parse(&[]).expect("empty Point.dat should parse"),
         graphic_index: None,
+        game_token: None,
     }
 }
 

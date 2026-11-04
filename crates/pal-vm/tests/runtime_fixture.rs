@@ -56,6 +56,7 @@ fn runtime_executes_basic_variable_arithmetic() {
         script_entry_pc: 12,
         point_table: PointTable::parse(&[]).expect("empty Point.dat should parse"),
         graphic_index: None,
+        game_token: None,
     };
 
     let config = ScriptRuntimeConfig::default();
@@ -103,6 +104,7 @@ fn window_extcalls_reach_host_queue_and_keep_script_mode_cache() {
         script_entry_pc: 12,
         point_table: PointTable::parse(&[]).unwrap(),
         graphic_index: None,
+        game_token: None,
     };
     let config = ScriptRuntimeConfig::default();
     let mut runtime = ScriptRuntime::boot(12, config.clone());

@@ -77,6 +77,7 @@ fn assets(mut script: Vec<u8>) -> CoreAssets {
         script_entry_pc: 12,
         point_table: PointTable::parse(&[]).unwrap(),
         graphic_index: None,
+        game_token: None,
     }
 }
 
