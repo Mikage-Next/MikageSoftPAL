@@ -657,6 +657,40 @@ pub fn lz_decode(input: &[u8], expected_len: usize) -> Result<Vec<u8>, MoeError>
     Ok(out)
 }
 
+/// Decrypts a packed resource body in place.
+///
+/// The index cipher only protects the header and the trailing index; bodies
+/// use this separate self-synchronising stream cipher. Every eight bytes are
+/// transformed with two rolling 32-bit states, each seeded from the record's
+/// seed word and the packed length. Verified byte for byte against two live
+/// Frida captures of the running patch.
+///
+/// Non-image payloads (`Sena.bin`, where `unpacked_size < packed_size`) do
+/// not use this transformation and are left to the host.
+pub fn decrypt_resource_body(body: &mut [u8], packed_size: u32, seed_word: u32) {
+    const STATE: u32 = 0xA73C_5F9D;
+    const STEP: u32 = 0x31DB_0ADD;
+    const SEED_XOR: u32 = 0xFEC9_753E;
+
+    let seed = seed_word.wrapping_add(packed_size) ^ SEED_XOR;
+    let mut left = STATE;
+    let mut right = STATE;
+    let mut prev_left = seed;
+    let mut prev_right = seed;
+    for chunk in body.chunks_exact_mut(8) {
+        left = left.wrapping_sub(STEP) ^ prev_left;
+        right = right.wrapping_sub(STEP) ^ prev_right;
+        let cipher_left = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        let cipher_right = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+        let plain_left = left ^ cipher_left;
+        let plain_right = right ^ cipher_right;
+        chunk[..4].copy_from_slice(&plain_left.to_le_bytes());
+        chunk[4..8].copy_from_slice(&plain_right.to_le_bytes());
+        prev_left = plain_left;
+        prev_right = plain_right;
+    }
+}
+
 /// One resource described by the expanded index. Field names follow the
 /// correlations verified on the V2 container: 141/141 name lengths match,
 /// and 140/140 packed sizes equal the gap to the next record's offset.
@@ -671,8 +705,9 @@ pub struct MoeResource {
     pub flags: u32,
     /// Absolute offset of the packed bytes in the container.
     pub offset: u32,
-    /// Unidentified word; correlates with but is not equal to the name hash.
-    pub unknown: u32,
+    /// Per-resource decode seed. Combined with `packed_size` it initialises
+    /// the body cipher; verified against two live runtime captures.
+    pub seed: u32,
 }
 
 /// Walks `24-byte prefix + NUL-terminated name` records in an expanded index.
@@ -699,7 +734,7 @@ pub fn parse_index_records(index: &[u8], count: u32) -> Result<Vec<MoeResource>,
             packed_size: word(base + 4),
             flags: word(base + 8),
             offset: word(base + 12),
-            unknown: word(base + 16),
+            seed: word(base + 16),
         });
         offset = name_end + 1;
     }
@@ -1061,5 +1096,34 @@ mod tests {
         assert_eq!(index.resources[0].name, "BGM_TEST.bmp");
         assert_eq!(index.resources[0].offset, 24);
         assert_eq!(index.resources[0].packed_size, 1_563_134);
+    }
+
+    /// Ciphertext/plaintext pairs captured from the running patch with Frida.
+    /// These are structural bytes only (a container header), not game text.
+    #[test]
+    fn resource_body_cipher_matches_live_captures() {
+        const PLAIN: [u8; 32] = [
+            0x60, 0x42, 0x4d, 0x38, 0x30, 0x2a, 0x00, 0x01, 0x00, 0x50, 0x36, 0x00, 0x00,
+            0x00, 0x28, 0x09, 0x00, 0xa0, 0x05, 0x00, 0x00, 0xd0, 0x02, 0x00, 0x00, 0x01,
+            0x00, 0x18, 0x0e, 0x00, 0x81, 0x00,
+        ];
+        const CIPHER_A: [u8; 32] = [
+            0x90, 0x83, 0x36, 0xbb, 0xc0, 0xeb, 0x7b, 0x82, 0x73, 0xa5, 0xdb, 0x69, 0x23,
+            0x9d, 0x88, 0x59, 0x96, 0x1a, 0x21, 0x38, 0x46, 0x42, 0xef, 0x17, 0xb9, 0x0e,
+            0x4c, 0x1e, 0x67, 0x57, 0x91, 0xe6,
+        ];
+        const CIPHER_B: [u8; 32] = [
+            0x78, 0xa9, 0x2c, 0xbb, 0x28, 0xc1, 0x61, 0x82, 0x5b, 0xf2, 0xfd, 0x69, 0x0b,
+            0xca, 0xae, 0x59, 0x7e, 0x67, 0xc3, 0x37, 0x2e, 0x6f, 0x81, 0x17, 0xa1, 0x1d,
+            0xee, 0x1d, 0x5f, 0x64, 0x2b, 0xe5,
+        ];
+        for (cipher, packed_size, seed) in [
+            (CIPHER_A, 1_238_798u32, 0x08C0_F900u32),
+            (CIPHER_B, 1_036_774u32, 0x08B9_F900u32),
+        ] {
+            let mut body = cipher.to_vec();
+            decrypt_resource_body(&mut body, packed_size, seed);
+            assert_eq!(body.as_slice(), &PLAIN[..]);
+        }
     }
 }
