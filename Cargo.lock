@@ -4420,7 +4420,7 @@ dependencies = [
  "raw-window-handle 0.6.2",
  "rtrb",
  "ttf-parser",
- "wgpu 29.0.3",
+ "wgpu",
 ]
 
 [[package]]
