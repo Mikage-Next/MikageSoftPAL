@@ -236,7 +236,7 @@ fn raster_gpu_readback_matches_cpu_reference() {
                             });
                         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
                         rx.recv().unwrap().unwrap();
-                        let actual = readback.slice(..).get_mapped_range().to_vec();
+                        let actual = readback.slice(..).get_mapped_range().expect("mapped readback").to_vec();
                         readback.unmap();
                         let mut scene = FrameScene::boot().with_logical_size(64, 64);
                         scene.clear_color = [80.0 / 255.0, 40.0 / 255.0, 160.0 / 255.0, 1.0];

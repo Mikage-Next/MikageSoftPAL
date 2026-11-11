@@ -113,7 +113,7 @@ fn raster_pipeline(
             module: &shader,
             entry_point: Some("vs_main"),
             compilation_options: Default::default(),
-            buffers: &[SpriteVertex::LAYOUT],
+            buffers: &[Some(SpriteVertex::LAYOUT)],
         },
         primitive: Default::default(),
         depth_stencil: None,
@@ -260,7 +260,7 @@ impl WgpuBackend {
     #[cfg(feature = "desktop")]
     pub async fn new(window: Arc<Window>, size: PhysicalSize<u32>) -> anyhow::Result<Self> {
         let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())));
         let surface = instance.create_surface(window)?;
         Self::with_surface(&instance, surface, size.width, size.height).await
     }
@@ -275,6 +275,7 @@ impl WgpuBackend {
     ) -> anyhow::Result<Self> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
+                apply_limit_buckets: false,
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
                 compatible_surface: Some(&surface),
@@ -314,6 +315,7 @@ impl WgpuBackend {
             })
             .unwrap_or(capabilities.formats[0]);
         let config = wgpu::SurfaceConfiguration {
+            color_space: wgpu::SurfaceColorSpace::Auto,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             width: width.max(1),
@@ -385,7 +387,7 @@ impl WgpuBackend {
                         module: &shader,
                         entry_point: Some("vs_main"),
                         compilation_options: wgpu::PipelineCompilationOptions::default(),
-                        buffers: &[SpriteVertex::LAYOUT],
+                        buffers: &[Some(SpriteVertex::LAYOUT)],
                     },
                     primitive: wgpu::PrimitiveState::default(),
                     depth_stencil: None,
@@ -786,7 +788,7 @@ impl WgpuBackend {
             }
         }
         self.queue.submit([encoder.finish()]);
-        frame.present();
+        self.queue.present(frame);
         Ok(RenderOutcome::Rendered)
     }
 

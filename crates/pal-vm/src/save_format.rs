@@ -133,7 +133,7 @@ pub fn save_directory(root: &Path) -> PathBuf {
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
-        .unwrap_or_else(|| root.join("save"))
+        .unwrap_or_else(|| pal_asset::vfs::save_directory(root))
 }
 
 pub fn original_save_path(root: &Path, slot: i32) -> PathBuf {
